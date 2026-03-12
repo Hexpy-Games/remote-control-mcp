@@ -92,6 +92,25 @@ async function main() {
     });
   });
 
+  // OpenID Connect discovery (ChatGPT 등 OIDC 조회하는 클라이언트 대응)
+  app.get('/.well-known/openid-configuration', (_req, res) => {
+    res.json({
+      issuer: config.baseUri,
+      authorization_endpoint: `${config.baseUri}/authorize`,
+      token_endpoint: `${config.baseUri}/token`,
+      registration_endpoint: `${config.baseUri}/register`,
+      introspection_endpoint: `${config.baseUri}/introspect`,
+      revocation_endpoint: `${config.baseUri}/revoke`,
+      token_endpoint_auth_methods_supported: ['none'],
+      response_types_supported: ['code'],
+      grant_types_supported: ['authorization_code', 'refresh_token'],
+      code_challenge_methods_supported: ['S256'],
+      scopes_supported: ['mcp', 'claudeai'],
+      subject_types_supported: ['public'],
+      id_token_signing_alg_values_supported: ['RS256'],
+    });
+  });
+
   // Auth module
   const authModule = new AuthModule({
     baseUri: config.baseUri,
