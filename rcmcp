@@ -347,49 +347,53 @@ cmd_auth() {
   # 클립보드 복사
   echo -n "$pin" | pbcopy
 
+  # PIN을 XXXX-XXXX 형식으로 표시
+  local pin_display="${pin:0:4}-${pin:4:4}"
+
   # PIN 표시
   echo ""
   echo "  ${BOLD}Authorization PIN${RESET}"
   divider
   echo ""
-  echo "  ${BOLD}${CYAN}  ${pin}  ${RESET}   ${DIM}(copied to clipboard)${RESET}"
+  echo "  ${BOLD}${CYAN}  ${pin_display}  ${RESET}   ${DIM}(copied to clipboard)${RESET}"
   echo ""
   info "Enter this PIN on the ${WHITE}/authorize${RESET} approval page."
   echo ""
   divider
   echo ""
-  echo "  ${DIM}Waiting for authorization...  (Ctrl+C to cancel)${RESET}"
-  echo ""
 
   # 폴링 시작 — auth-status?since=<now> 로 "지금 이후" 인증만 감지
   local since
   since=$(date +%s%3N)  # epoch milliseconds
-  local dots=0
+
+  # 바람개비 스피너 — local을 루프 밖에서 선언 (zsh: 루프 안 재선언 시 stdout 오염 방지)
+  local spinner_str='⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏'
+  local spinner_len=10
+  local spinner_idx=0
+  local auth_resp authorized client_id frame
 
   while true; do
-    sleep 2
-    local status
-    status=$(curl -sf --max-time 3 "${admin_base}/auth-status?since=${since}" 2>/dev/null)
-    local authorized
-    authorized=$(echo "$status" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('authorized','false'))" 2>/dev/null)
+    # \r\033[K : 커서 줄 처음으로 + 줄 끝까지 지우기
+    frame="${spinner_str:$spinner_idx:1}"
+    printf "\r\033[K  ${DIM}%s  Waiting for authorization...${RESET}" "$frame"
+    spinner_idx=$(( (spinner_idx + 1) % spinner_len ))
 
-    if [[ "$authorized" == "True" || "$authorized" == "true" ]]; then
-      local client_id
-      client_id=$(echo "$status" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('clientId','unknown'))" 2>/dev/null)
-      echo ""
-      echo "  ${GREEN}${BOLD}✓ Authorization complete${RESET}"
-      echo ""
-      info "Client: ${DIM}${client_id}${RESET}"
-      echo ""
-      return 0
+    sleep 0.1
+
+    # 2초마다 (20프레임) 폴링
+    if (( spinner_idx % 20 == 0 )); then
+      auth_resp=$(curl -sf --max-time 3 "${admin_base}/auth-status?since=${since}" 2>/dev/null)
+      authorized=$(echo "$auth_resp" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('authorized','false'))" 2>/dev/null)
+
+      if [[ "$authorized" == "True" || "$authorized" == "true" ]]; then
+        client_id=$(echo "$auth_resp" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('clientId','unknown'))" 2>/dev/null)
+        printf "\r\033[K  ${GREEN}${BOLD}✓ Authorization complete${RESET}\n"
+        echo ""
+        info "Client: ${DIM}${client_id}${RESET}"
+        echo ""
+        return 0
+      fi
     fi
-
-    # 진행 표시 (점 애니메이션)
-    dots=$(( (dots % 3) + 1 ))
-    local dot_str=""
-    for ((i=0; i<dots; i++)); do dot_str+="·"; done
-    printf "
-  ${DIM}Waiting%-4s${RESET}" "$dot_str"
   done
 }
 
