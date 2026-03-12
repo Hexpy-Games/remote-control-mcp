@@ -1,6 +1,5 @@
-import { SetOptions } from "@redis/client";
 import { OAuthClientInformationFull } from "@modelcontextprotocol/sdk/shared/auth.js";
-import { RedisClient } from "../../shared/redis.js";
+import { RedisClient, SetOptions } from "../../shared/redis.js";
 import { McpInstallation, PendingAuthorization, TokenExchange } from "../types.js";
 import { sha256, encryptString, decryptString } from "../auth/auth-core.js";
 import { logger } from "../../shared/logger.js";

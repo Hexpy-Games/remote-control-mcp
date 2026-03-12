@@ -1,4 +1,16 @@
-import { createClient, SetOptions } from "@redis/client";
+import { createClient } from "@redis/client";
+
+// SetOptions was removed from @redis/client v5 public exports; define locally.
+export type SetOptions = {
+  EX?: number;
+  PX?: number;
+  EXAT?: number;
+  PXAT?: number;
+  KEEPTTL?: boolean;
+  NX?: boolean;
+  XX?: boolean;
+  GET?: boolean;
+};
 import { logger } from "./logger.js";
 
 const REDIS_URL = process.env.REDIS_URL || "redis://localhost:6379";
@@ -38,14 +50,18 @@ export interface RedisClient {
 }
 
 export class RedisClientImpl implements RedisClient {
-  private redis = createClient({
-    url: REDIS_URL,
-    password: process.env.REDIS_PASSWORD,
-    socket: {
-      tls: process.env.REDIS_TLS === "1",
-      ca: process.env.REDIS_TLS_CA,
-    }
-  });
+  private redis = createClient(
+    process.env.REDIS_TLS === "1"
+      ? {
+          url: REDIS_URL,
+          password: process.env.REDIS_PASSWORD,
+          socket: { tls: true as const, ca: process.env.REDIS_TLS_CA },
+        }
+      : {
+          url: REDIS_URL,
+          password: process.env.REDIS_PASSWORD,
+        }
+  );
 
   constructor() {
     this.redis.on("error", (error) =>
@@ -54,8 +70,9 @@ export class RedisClientImpl implements RedisClient {
   }
 
   async numsub(key: string): Promise<number> {
-    const subs = await this.redis.pubSubNumSub(key);
-    return subs[key] || 0;
+    const result = await this.redis.sendCommand(['PUBSUB', 'NUMSUB', key]) as unknown[];
+    // result is [channelName, count, channelName, count, ...] array
+    return typeof result[1] === 'number' ? result[1] : parseInt(String(result[1]), 10) || 0;
   }
 
   async get(key: string): Promise<string | null> {
@@ -79,7 +96,7 @@ export class RedisClientImpl implements RedisClient {
   }
 
   async expire(key: string, seconds: number): Promise<boolean> {
-    return await this.redis.expire(key, seconds);
+    return (await this.redis.expire(key, seconds)) > 0;
   }
 
   async lpush(key: string, ...values: string[]): Promise<number> {
