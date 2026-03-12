@@ -18,6 +18,7 @@ import {
   saveTokenExchange,
 } from '../services/auth.js';
 import { InvalidTokenError } from '@modelcontextprotocol/sdk/server/auth/errors.js';
+import { markAuthorized } from './pin.js';
 import { logger } from '../../shared/logger.js';
 
 export class FeatureReferenceOAuthClientsStore implements OAuthRegisteredClientsStore {
@@ -44,12 +45,13 @@ export class FeatureReferenceAuthProvider implements OAuthServerProvider {
   }
 
   /**
-   * Shows an approve/deny page. On approval, redirects directly to the client's
-   * redirect_uri with the authorization code — no upstream IdP hop.
+   * Renders a PIN-gated authorization page.
+   * The server prints a one-time PIN (a-z A-Z 0-9, 8 chars) to its terminal on startup.
+   * Without the PIN the Approve button is unreachable, even if the tunnel URL is known.
    *
-   * SECURITY NOTE: This server has no user credential layer. Anyone who can
-   * reach the /authorize endpoint can approve access. Security is enforced at
-   * the network tunnel (Cloudflare / ngrok) layer.
+   * Flow:
+   *   GET /authorize  →  render PIN form  (this method)
+   *   POST /authorize/confirm  →  verify PIN, redirect to client redirectUri with code
    */
   async authorize(
     client: OAuthClientInformationFull,
@@ -71,16 +73,10 @@ export class FeatureReferenceAuthProvider implements OAuthServerProvider {
       clientId: client.client_id,
     });
 
-    // Build the approval redirect URL
-    const approveUrl = new URL(params.redirectUri);
-    approveUrl.searchParams.set('code', authorizationCode);
-    if (params.state) approveUrl.searchParams.set('state', params.state);
-    const approveHref = approveUrl.toString();
-
     res.setHeader('Content-Security-Policy', [
       "default-src 'self'",
       "style-src 'self' 'unsafe-inline'",
-      "script-src 'none'",
+      "script-src 'unsafe-inline'",
       "img-src 'self' data:",
       "object-src 'none'",
       "frame-ancestors 'none'",
@@ -126,12 +122,43 @@ export class FeatureReferenceAuthProvider implements OAuthServerProvider {
     }
     h1 { font-size: 22px; font-weight: 700; margin-bottom: 6px; }
     .sub { color: #888; font-size: 14px; margin-bottom: 28px; }
-    .field { background: #0f0f0f; border: 1px solid #2a2a2a; border-radius: 6px; padding: 10px 14px; font-size: 13px; font-family: monospace; color: #aaa; word-break: break-all; margin-bottom: 28px; }
+    .client-id { background: #0f0f0f; border: 1px solid #2a2a2a; border-radius: 6px; padding: 10px 14px; font-size: 13px; font-family: monospace; color: #aaa; word-break: break-all; margin-bottom: 28px; }
+    .pin-label { font-size: 13px; color: #888; margin-bottom: 12px; }
+    .pin-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 8px;
+    }
+    .pin-group {
+      display: flex;
+      gap: 6px;
+    }
+    .pin-cell {
+      width: 44px;
+      height: 52px;
+      background: #0f0f0f;
+      border: 1px solid #3a3a3a;
+      border-radius: 6px;
+      font-size: 22px;
+      font-family: monospace;
+      font-weight: 600;
+      color: #f0f0f0;
+      text-align: center;
+      outline: none;
+      caret-color: #16a34a;
+      transition: border-color 0.15s;
+    }
+    .pin-cell:focus { border-color: #16a34a; box-shadow: 0 0 0 2px rgba(22,163,74,0.2); }
+    .pin-cell.filled { border-color: #2a6a3a; }
+    .pin-sep { font-size: 22px; color: #555; font-weight: 300; user-select: none; }
+    .pin-hint { font-size: 11px; color: #555; margin-bottom: 24px; }
+    .error-msg { color: #ef4444; font-size: 13px; margin-bottom: 16px; display: none; }
     .actions { display: flex; gap: 12px; }
-    .btn { flex: 1; padding: 12px; border-radius: 8px; font-size: 15px; font-weight: 600; cursor: pointer; text-decoration: none; text-align: center; display: inline-block; border: none; }
+    .btn { flex: 1; padding: 12px; border-radius: 8px; font-size: 15px; font-weight: 600; cursor: pointer; text-align: center; border: none; }
     .btn-approve { background: #16a34a; color: #fff; }
     .btn-approve:hover { background: #15803d; }
-    .btn-deny { background: #1e1e1e; color: #888; border: 1px solid #333; }
+    .btn-deny { background: #1e1e1e; color: #888; border: 1px solid #333; text-decoration: none; display: inline-block; }
     .btn-deny:hover { background: #2a2a2a; }
     .footer { margin-top: 24px; color: #555; font-size: 11px; text-align: center; }
   </style>
@@ -144,11 +171,96 @@ export class FeatureReferenceAuthProvider implements OAuthServerProvider {
     </div>
     <h1>Authorization Request</h1>
     <p class="sub">A client is requesting access to this MCP server.</p>
-    <div class="field">${client.client_id}</div>
-    <div class="actions">
-      <a href="${approveHref}" class="btn btn-approve">✓ Approve</a>
-      <a href="/" class="btn btn-deny">✗ Deny</a>
-    </div>
+    <div class="client-id">${client.client_id}</div>
+
+    <form method="POST" action="/authorize/confirm" id="pinForm">
+      <input type="hidden" name="code" value="${authorizationCode}" />
+      <input type="hidden" name="pin" id="pinHidden" />
+      <p class="pin-label">Server PIN</p>
+      <div class="pin-row">
+        <div class="pin-group" id="group1">
+          <input class="pin-cell" type="text" inputmode="text" maxlength="1" autocomplete="off" spellcheck="false" data-idx="0">
+          <input class="pin-cell" type="text" inputmode="text" maxlength="1" autocomplete="off" spellcheck="false" data-idx="1">
+          <input class="pin-cell" type="text" inputmode="text" maxlength="1" autocomplete="off" spellcheck="false" data-idx="2">
+          <input class="pin-cell" type="text" inputmode="text" maxlength="1" autocomplete="off" spellcheck="false" data-idx="3">
+        </div>
+        <span class="pin-sep">&ndash;</span>
+        <div class="pin-group" id="group2">
+          <input class="pin-cell" type="text" inputmode="text" maxlength="1" autocomplete="off" spellcheck="false" data-idx="4">
+          <input class="pin-cell" type="text" inputmode="text" maxlength="1" autocomplete="off" spellcheck="false" data-idx="5">
+          <input class="pin-cell" type="text" inputmode="text" maxlength="1" autocomplete="off" spellcheck="false" data-idx="6">
+          <input class="pin-cell" type="text" inputmode="text" maxlength="1" autocomplete="off" spellcheck="false" data-idx="7">
+        </div>
+      </div>
+      <p class="pin-hint">
+        Run <code style="background:#1a1a1a;padding:1px 5px;border-radius:3px;font-size:11px">rcmcp auth</code> on the Mac to get the PIN.
+        &nbsp;<a href="https://github.com/Hexpy-Games/remote-control-mcp#authorization" target="_blank" style="color:#555;font-size:11px">Help &nearr;</a>
+      </p>
+      <div class="actions">
+        <button type="submit" class="btn btn-approve" id="approveBtn" disabled>✓ Approve</button>
+        <a href="/" class="btn btn-deny">✗ Deny</a>
+      </div>
+    </form>
+    <script>
+      (function() {
+        var cells = Array.from(document.querySelectorAll('.pin-cell'));
+        var hidden = document.getElementById('pinHidden');
+        var btn = document.getElementById('approveBtn');
+
+        cells[0].focus();
+
+        function updateHidden() {
+          var val = cells.map(function(c){ return c.value; }).join('');
+          hidden.value = val;
+          btn.disabled = val.length < 8;
+        }
+
+        cells.forEach(function(cell, i) {
+          cell.addEventListener('input', function() {
+            // 붙여넣기 처리: 8자 혹은 9자(대시 포함) 한번에
+            var raw = cell.value.replace(/-/g,'');
+            if (raw.length > 1) {
+              var chars = raw.slice(0, 8).split('');
+              chars.forEach(function(ch, j) {
+                if (cells[j]) { cells[j].value = ch; cells[j].classList.toggle('filled', !!ch); }
+              });
+              var last = Math.min(chars.length, 7);
+              cells[last] && cells[last].focus();
+              updateHidden();
+              return;
+            }
+            cell.classList.toggle('filled', !!cell.value);
+            if (cell.value && i < 7) cells[i+1].focus();
+            updateHidden();
+          });
+
+          cell.addEventListener('keydown', function(e) {
+            if (e.key === 'Backspace' && !cell.value && i > 0) {
+              cells[i-1].value = '';
+              cells[i-1].classList.remove('filled');
+              cells[i-1].focus();
+              updateHidden();
+            }
+          });
+
+          cell.addEventListener('paste', function(e) {
+            e.preventDefault();
+            var text = (e.clipboardData || window.clipboardData).getData('text').replace(/-/g,'').slice(0,8);
+            text.split('').forEach(function(ch, j) {
+              if (cells[j]) { cells[j].value = ch; cells[j].classList.toggle('filled', true); }
+            });
+            var nextIdx = Math.min(text.length, 7);
+            cells[nextIdx].focus();
+            updateHidden();
+          });
+        });
+
+        document.getElementById('pinForm').addEventListener('submit', function() {
+          updateHidden();
+        });
+      })();
+    </script>
+
     <div class="footer">Remote Mac MCP Server</div>
   </div>
 </body>
@@ -170,9 +282,6 @@ export class FeatureReferenceAuthProvider implements OAuthServerProvider {
     client: OAuthClientInformationFull,
     authorizationCode: string
   ): Promise<OAuthTokens> {
-    // Read the pending authorization saved at /authorize time.
-    // (v2 generated tokens in the upstream IDP callback; we do it here
-    //  since there is no upstream IDP hop — approve goes directly to claude.ai)
     const pendingAuth = await readPendingAuthorization(authorizationCode);
     if (!pendingAuth) throw new Error('Invalid authorization code');
     if (pendingAuth.clientId !== client.client_id)
@@ -196,6 +305,7 @@ export class FeatureReferenceAuthProvider implements OAuthServerProvider {
       alreadyUsed: false,
     });
 
+    markAuthorized(client.client_id);
     logger.debug('Authorization code exchanged', { clientId: client.client_id });
 
     return {
@@ -220,10 +330,8 @@ export class FeatureReferenceAuthProvider implements OAuthServerProvider {
 
     const newTokens = generateMcpTokens();
 
-    // Revoke old tokens BEFORE saving new ones (fix: was missing before)
     await revokeMcpInstallation(oldAccessToken);
 
-    // Save new tokens
     if (newTokens.refresh_token) {
       await saveRefreshToken(newTokens.refresh_token, newTokens.access_token);
     }

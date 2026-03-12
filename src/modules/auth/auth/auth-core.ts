@@ -31,23 +31,27 @@ export function sha256(data: string): string {
 }
 
 /**
- * Encrypts a string using AES-256-CBC encryption.
+ * Encrypts a string using AES-256-GCM (authenticated encryption).
  * @param text The plaintext to encrypt
- * @param key The encryption key (64 hex characters)
- * @returns Encrypted string in format "iv:ciphertext"
+ * @param key The encryption key (64 hex characters = 32 bytes)
+ * @returns Encrypted string in format "iv:authtag:ciphertext"
  */
 export function encryptString({ text, key }: { text: string; key: string }): string {
-  const iv = crypto.randomBytes(16);
-  const cipher = crypto.createCipheriv("aes-256-cbc", Buffer.from(key, "hex"), iv);
+  const iv = crypto.randomBytes(12); // 12-byte IV is standard for GCM
+  const keyBuf = Buffer.from(key.slice(0, 64), "hex");
+  const cipher = crypto.createCipheriv("aes-256-gcm", keyBuf, iv);
   let encrypted = cipher.update(text, "utf-8", "hex");
   encrypted += cipher.final("hex");
-  return `${iv.toString("hex")}:${encrypted}`;
+  const authTag = cipher.getAuthTag();
+  return `${iv.toString("hex")}:${authTag.toString("hex")}:${encrypted}`;
 }
 
 /**
  * Decrypts a string encrypted with encryptString.
- * @param encryptedText The encrypted string in format "iv:ciphertext"
- * @param key The encryption key (64 hex characters)
+ * Supports both GCM (3-part: iv:authtag:ciphertext) and legacy CBC (2-part: iv:ciphertext).
+ * Legacy CBC entries are decrypted as a one-time fallback during migration.
+ * @param encryptedText The encrypted string
+ * @param key The encryption key (64 hex characters = 32 bytes)
  * @returns Decrypted plaintext
  */
 export function decryptString({
@@ -57,9 +61,25 @@ export function decryptString({
   encryptedText: string;
   key: string;
 }): string {
-  const [ivHex, encrypted] = encryptedText.split(":");
+  const keyBuf = Buffer.from(key.slice(0, 64), "hex");
+  const parts = encryptedText.split(":");
+
+  if (parts.length === 3) {
+    // GCM format: iv:authtag:ciphertext
+    const [ivHex, authTagHex, encrypted] = parts;
+    const iv = Buffer.from(ivHex, "hex");
+    const authTag = Buffer.from(authTagHex, "hex");
+    const decipher = crypto.createDecipheriv("aes-256-gcm", keyBuf, iv);
+    decipher.setAuthTag(authTag);
+    let decrypted = decipher.update(encrypted, "hex", "utf-8");
+    decrypted += decipher.final("utf-8");
+    return decrypted;
+  }
+
+  // Legacy CBC format: iv:ciphertext (one-time fallback for existing Redis entries)
+  const [ivHex, encrypted] = parts;
   const iv = Buffer.from(ivHex, "hex");
-  const decipher = crypto.createDecipheriv("aes-256-cbc", Buffer.from(key, "hex"), iv);
+  const decipher = crypto.createDecipheriv("aes-256-cbc", keyBuf, iv);
   let decrypted = decipher.update(encrypted, "hex", "utf-8");
   decrypted += decipher.final("utf-8");
   return decrypted;

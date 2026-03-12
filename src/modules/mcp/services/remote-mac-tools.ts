@@ -42,7 +42,9 @@ const USER_BLOCKED = (process.env.BLOCKED_COMMANDS || "")
   .filter(Boolean);
 
 const DEFAULT_BLOCKED: RegExp[] = [
-  /rm\s+-rf\s+\/\s*$/, // rm -rf / (bare root deletion)
+  /\brm\b.*\s-[a-z]*rf[a-z]*\s+\/[\s*;|&]|\brm\b.*\s-[a-z]*rf[a-z]*\s+\/$/, // rm -rf / or rm -rf /*
+  /\brm\b.*\s-[a-z]*fr[a-z]*\s+\/[\s*;|&]|\brm\b.*\s-[a-z]*fr[a-z]*\s+\/$/, // rm -fr / or rm -fr /*
+  /--no-preserve-root/,              // explicit root deletion flag
   /mkfs/, // filesystem format
   /dd\s+if=.*of=\/dev\//, // direct disk write
   /:\(\)\s*\{.*\}/, // fork bomb
