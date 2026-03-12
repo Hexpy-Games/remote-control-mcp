@@ -74,17 +74,13 @@ Then set up a tunnel (see below) and add the server URL to your AI client.
 
 ---
 
-## Tunnel Options
+## Tunnel Options (for manual setup)
 
 Never bind the server directly to a public IP. Use one of the following:
 
-> **`setup.sh` automates Options 1 and 2** (Cloudflare Tunnel and ngrok). Tailscale and direct IP require manual setup.
+> **`setup.sh` automates Options 1 and 2** (Cloudflare Tunnel and ngrok).
 
 ### Option 1: Cloudflare Tunnel (recommended — free, stable URL)
-
-`setup.sh` handles installation, authentication, DNS routing, and LaunchAgent registration automatically.
-
-To set up manually:
 
 ```bash
 brew install cloudflared
@@ -105,10 +101,6 @@ cloudflared tunnel --url http://localhost:3232
 
 ### Option 2: ngrok (quick setup, generous free tier)
 
-`setup.sh` handles installation, authtoken, and LaunchAgent registration automatically.
-
-To set up manually:
-
 ```bash
 brew install ngrok
 ngrok config add-authtoken <your-token>
@@ -118,20 +110,7 @@ ngrok http 3232
 
 > The ngrok free tier assigns a random URL on each restart — update `BASE_URI` in `.env` after each restart, then run `rcmcp restart server`. Paid plans support a fixed static domain.
 
-### Option 3: Tailscale Funnel (manual setup only)
-
-Tailscale is not yet supported by `setup.sh`. Set up manually:
-
-```bash
-brew install tailscale
-tailscale up
-tailscale funnel 3232
-# Copy the https://...ts.net URL shown and set it as BASE_URI in .env
-```
-
-Tailscale Funnel gives you a stable `*.ts.net` HTTPS URL with no account beyond a free Tailscale plan.
-
-### Option 4: Direct IP (advanced, manual only)
+### Option 3: Direct IP (advanced)
 
 Only use this if you understand the risks and have proper TLS termination in place:
 
