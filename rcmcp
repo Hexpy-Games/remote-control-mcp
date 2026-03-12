@@ -337,8 +337,9 @@ cmd_auth() {
     return 1
   fi
 
-  local pin
+  local pin expires_at
   pin=$(echo "$pin_response" | python3 -c "import sys,json; print(json.load(sys.stdin)['pin'])" 2>/dev/null)
+  expires_at=$(echo "$pin_response" | python3 -c "import sys,json; print(json.load(sys.stdin)['expiresAt'])" 2>/dev/null)
   if [[ -z "$pin" ]]; then
     err "Unexpected response from admin port"
     return 1
@@ -364,18 +365,29 @@ cmd_auth() {
 
   # 폴링 시작 — auth-status?since=<now> 로 "지금 이후" 인증만 감지
   local since
-  since=$(date +%s%3N)  # epoch milliseconds
+  since=$(python3 -c "import time; print(int(time.time()*1000))")  # epoch milliseconds (macOS compatible)
 
   # 바람개비 스피너 — local을 루프 밖에서 선언 (zsh: 루프 안 재선언 시 stdout 오염 방지)
   local spinner_str='⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏'
   local spinner_len=10
   local spinner_idx=0
-  local auth_resp authorized client_id frame
+  local auth_resp authorized client_id frame remaining_s now_ms
 
   while true; do
+    # 남은 시간 계산 (epoch ms 기준)
+    now_ms=$(python3 -c "import time; print(int(time.time()*1000))")
+    remaining_s=$(( (expires_at - now_ms) / 1000 ))
+
+    # TTL 만료 확인
+    if (( remaining_s <= 0 )); then
+      printf "\r\033[K  ${RED}${BOLD}✗ PIN expired${RESET}  Run ${WHITE}rcmcp auth${RESET} again to get a new PIN.\n"
+      echo ""
+      return 1
+    fi
+
     # \r\033[K : 커서 줄 처음으로 + 줄 끝까지 지우기
     frame="${spinner_str:$spinner_idx:1}"
-    printf "\r\033[K  ${DIM}%s  Waiting for authorization...${RESET}" "$frame"
+    printf "\r\033[K  ${DIM}%s  Waiting for authorization...  ${RESET}${YELLOW}%ds${RESET}" "$frame" "$remaining_s"
     spinner_idx=$(( (spinner_idx + 1) % spinner_len ))
 
     sleep 0.1
