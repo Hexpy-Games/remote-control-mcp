@@ -16,7 +16,7 @@ import { MCPModule } from './modules/mcp/index.js';
 import { InternalTokenValidator } from './interfaces/auth-validator.js';
 import { redisClient } from './modules/shared/redis.js';
 import { logger } from './modules/shared/logger.js';
-import { getServerPin, getLastAuth, rotatePin } from './modules/auth/auth/pin.js';
+import { getServerPin, getLastAuth, rotatePin, PIN_TTL_MS } from './modules/auth/auth/pin.js';
 
 const ADMIN_PORT = 3233;
 
@@ -214,7 +214,8 @@ async function main() {
   // PIN rotate — rcmcp auth 실행마다 호출. 새 PIN 생성 + lastAuth 초기화.
   adminApp.post('/pin/rotate', (_req, res) => {
     const pin = rotatePin();
-    res.json({ pin });
+    const expiresAt = Date.now() + PIN_TTL_MS;
+    res.json({ pin, expiresAt });
   });
 
   // 최근 인증 완료 여부 — rcmcp auth 폴링용
