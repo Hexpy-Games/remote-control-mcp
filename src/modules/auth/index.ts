@@ -16,7 +16,7 @@ import { fileURLToPath } from 'url';
 import rateLimit from 'express-rate-limit';
 import { mcpAuthRouter } from '@modelcontextprotocol/sdk/server/auth/router.js';
 import { FeatureReferenceAuthProvider } from './auth/provider.js';
-import { verifyPin, markAuthorized, rotatePin } from './auth/pin.js';
+import { verifyPin, markAuthorized, rotatePin, PinVerifyResult } from './auth/pin.js';
 import { readPendingAuthorization } from './services/auth.js';
 import { TokenIntrospectionResponse } from '../../interfaces/auth-validator.js';
 import { logger } from '../shared/logger.js';
@@ -123,10 +123,16 @@ export class AuthModule {
           return;
         }
 
-        // PIN 검증 (timing-safe)
-        if (!verifyPin(pin)) {
-          logger.warning('PIN verification failed', { ip: req.ip });
-          res.status(403).send('Invalid PIN.');
+        // PIN 검증 (timing-safe, TTL 체크 포함)
+        const pinResult: PinVerifyResult = verifyPin(pin);
+        if (pinResult !== 'ok') {
+          if (pinResult === 'expired') {
+            logger.warning('PIN expired or not activated', { ip: req.ip });
+            res.status(403).send('PIN expired. Run \'rcmcp auth\' again to get a new PIN.');
+          } else {
+            logger.warning('PIN verification failed', { ip: req.ip });
+            res.status(403).send('Invalid PIN.');
+          }
           return;
         }
 
