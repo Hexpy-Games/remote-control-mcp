@@ -16,7 +16,7 @@ import { fileURLToPath } from 'url';
 import rateLimit from 'express-rate-limit';
 import { mcpAuthRouter } from '@modelcontextprotocol/sdk/server/auth/router.js';
 import { FeatureReferenceAuthProvider } from './auth/provider.js';
-import { verifyPin, markAuthorized } from './auth/pin.js';
+import { verifyPin, markAuthorized, rotatePin } from './auth/pin.js';
 import { readPendingAuthorization } from './services/auth.js';
 import { TokenIntrospectionResponse } from '../../interfaces/auth-validator.js';
 import { logger } from '../shared/logger.js';
@@ -142,8 +142,11 @@ export class AuthModule {
         redirectUrl.searchParams.set('code', code);
         if (pending.state) redirectUrl.searchParams.set('state', pending.state);
 
-        // PIN 검증 성공 = Mac 주인이 맞음 → 즉시 markAuthorized
-        // (token exchange는 Claude 앱이 비동기로 처리하므로 여기서 기록해야 폴링이 감지 가능)
+        // 1회용 PIN: 인증 성공 즉시 rotate → 같은 PIN으로 재사용 불가
+        // ⚠️ rotatePin()은 _lastAuth를 null로 초기화하므로 markAuthorized 앞에 호출해야 함
+        rotatePin();
+
+        // PIN rotate 후 폴링 감지용 기록 (rotate가 _lastAuth를 저령하며 이미 null이므로 여기서 덮어씨)
         markAuthorized(pending.clientId);
 
         logger.debug('PIN verified, redirecting to client', {
