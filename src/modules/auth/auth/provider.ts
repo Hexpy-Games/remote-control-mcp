@@ -18,6 +18,7 @@ import {
   saveTokenExchange,
 } from '../services/auth.js';
 import { InvalidTokenError } from '@modelcontextprotocol/sdk/server/auth/errors.js';
+import { markAuthorized } from './pin.js';
 import { logger } from '../../shared/logger.js';
 
 export class FeatureReferenceOAuthClientsStore implements OAuthRegisteredClientsStore {
@@ -221,6 +222,7 @@ export class FeatureReferenceAuthProvider implements OAuthServerProvider {
       alreadyUsed: false,
     });
 
+    markAuthorized(client.client_id);
     logger.debug('Authorization code exchanged', { clientId: client.client_id });
 
     return {

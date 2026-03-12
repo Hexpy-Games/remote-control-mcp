@@ -324,31 +324,72 @@ cmd_restart() {
 
 # ── auth ──────────────────────────────────────────────────────────────────────
 cmd_auth() {
-  local admin_url="http://127.0.0.1:3233/pin"
-  local response
-  response=$(curl -sf --max-time 3 "$admin_url" 2>/dev/null)
-  if [[ -z "$response" ]]; then
+  local admin_base="http://127.0.0.1:3233"
+
+  # 서버 생존 확인 + PIN 조회
+  local pin_response
+  pin_response=$(curl -sf --max-time 3 "${admin_base}/pin" 2>/dev/null)
+  if [[ -z "$pin_response" ]]; then
     echo ""
     err "Could not reach admin port (127.0.0.1:3233)"
     info "Is the server running? Try: ${WHITE}rcmcp status${RESET}"
     echo ""
     return 1
   fi
+
   local pin
-  pin=$(echo "$response" | python3 -c "import sys,json; print(json.load(sys.stdin)['pin'])" 2>/dev/null)
+  pin=$(echo "$pin_response" | python3 -c "import sys,json; print(json.load(sys.stdin)['pin'])" 2>/dev/null)
   if [[ -z "$pin" ]]; then
     err "Unexpected response from admin port"
     return 1
   fi
+
+  # 클립보드 복사
+  echo -n "$pin" | pbcopy
+
+  # PIN 표시
   echo ""
   echo "  ${BOLD}Authorization PIN${RESET}"
   divider
   echo ""
-  echo "  ${BOLD}${CYAN}${pin}${RESET}"
+  echo "  ${BOLD}${CYAN}  ${pin}  ${RESET}   ${DIM}(copied to clipboard)${RESET}"
   echo ""
   info "Enter this PIN on the ${WHITE}/authorize${RESET} approval page."
-  info "PIN resets on server restart."
   echo ""
+  divider
+  echo ""
+  echo "  ${DIM}Waiting for authorization...  (Ctrl+C to cancel)${RESET}"
+  echo ""
+
+  # 폴링 시작 — auth-status?since=<now> 로 "지금 이후" 인증만 감지
+  local since
+  since=$(date +%s%3N)  # epoch milliseconds
+  local dots=0
+
+  while true; do
+    sleep 2
+    local status
+    status=$(curl -sf --max-time 3 "${admin_base}/auth-status?since=${since}" 2>/dev/null)
+    local authorized
+    authorized=$(echo "$status" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('authorized','false'))" 2>/dev/null)
+
+    if [[ "$authorized" == "True" || "$authorized" == "true" ]]; then
+      local client_id
+      client_id=$(echo "$status" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('clientId','unknown'))" 2>/dev/null)
+      echo ""
+      echo "  ${GREEN}${BOLD}✓ Authorization complete${RESET}"
+      echo ""
+      info "Client: ${DIM}${client_id}${RESET}"
+      echo ""
+      return 0
+    fi
+
+    # 진행 표시 (점 애니메이션)
+    dots=$(( (dots % 3) + 1 ))
+    local dot_str=""
+    for ((i=0; i<dots; i++)); do dot_str+="·"; done
+    printf "  ${DIM}Waiting%-4s${RESET}" "$dot_str"
+  done
 }
 
 # ── logs ──────────────────────────────────────────────────────────────────────

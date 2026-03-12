@@ -16,7 +16,7 @@ import { MCPModule } from './modules/mcp/index.js';
 import { InternalTokenValidator } from './interfaces/auth-validator.js';
 import { redisClient } from './modules/shared/redis.js';
 import { logger } from './modules/shared/logger.js';
-import { getServerPin } from './modules/auth/auth/pin.js';
+import { getServerPin, getLastAuth } from './modules/auth/auth/pin.js';
 
 const ADMIN_PORT = 3233;
 
@@ -213,6 +213,18 @@ async function main() {
   const adminApp = express();
   adminApp.get('/pin', (_req, res) => {
     res.json({ pin: getServerPin() });
+  });
+
+  // 최근 인증 완료 여부 — rcmcp auth 폴링용
+  // since: 이 epoch ms 이후에 발급된 토큰만 "새 인증"으로 간주
+  adminApp.get('/auth-status', (req, res) => {
+    const since = Number(req.query.since) || 0;
+    const last = getLastAuth();
+    if (last && last.issuedAt > since) {
+      res.json({ authorized: true, clientId: last.clientId, issuedAt: last.issuedAt });
+    } else {
+      res.json({ authorized: false });
+    }
   });
   adminApp.listen(ADMIN_PORT, '127.0.0.1', () => {
     console.log(`Admin (localhost only): http://127.0.0.1:${ADMIN_PORT}`);
