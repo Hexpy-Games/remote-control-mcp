@@ -16,7 +16,7 @@ import { fileURLToPath } from 'url';
 import rateLimit from 'express-rate-limit';
 import { mcpAuthRouter } from '@modelcontextprotocol/sdk/server/auth/router.js';
 import { FeatureReferenceAuthProvider } from './auth/provider.js';
-import { verifyPin } from './auth/pin.js';
+import { verifyPin, markAuthorized } from './auth/pin.js';
 import { readPendingAuthorization } from './services/auth.js';
 import { TokenIntrospectionResponse } from '../../interfaces/auth-validator.js';
 import { logger } from '../shared/logger.js';
@@ -142,12 +142,28 @@ export class AuthModule {
         redirectUrl.searchParams.set('code', code);
         if (pending.state) redirectUrl.searchParams.set('state', pending.state);
 
+        // PIN 검증 성공 = Mac 주인이 맞음 → 즉시 markAuthorized
+        // (token exchange는 Claude 앱이 비동기로 처리하므로 여기서 기록해야 폴링이 감지 가능)
+        markAuthorized(pending.clientId);
+
         logger.debug('PIN verified, redirecting to client', {
           code: code.substring(0, 8) + '...',
           clientId: pending.clientId,
+          redirectUrl: redirectUrl.toString(),
+          hasState: !!pending.state,
         });
 
-        res.redirect(302, redirectUrl.toString());
+        // form-action CSP 우회: res.redirect()는 302 redirect chain을 form-action으로 검사하는 브라우저에서 차단됨.
+        // meta refresh는 navigation이므로 form-action CSP에 해당 없음.
+        res.setHeader('Content-Security-Policy', [
+          "default-src 'none'",
+          "style-src 'unsafe-inline'",
+        ].join('; '));
+        res.send(`<!DOCTYPE html><html><head>
+          <meta http-equiv="refresh" content="0;url=${redirectUrl.toString()}">
+          <style>body{font-family:system-ui;background:#0a0a0a;color:#f0f0f0;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0;font-size:15px;}</style>
+        </head><body>Redirecting…</body></html>`);
+        return;
       }
     );
 

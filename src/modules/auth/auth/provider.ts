@@ -76,7 +76,7 @@ export class FeatureReferenceAuthProvider implements OAuthServerProvider {
     res.setHeader('Content-Security-Policy', [
       "default-src 'self'",
       "style-src 'self' 'unsafe-inline'",
-      "script-src 'none'",
+      "script-src 'unsafe-inline'",
       "img-src 'self' data:",
       "object-src 'none'",
       "frame-ancestors 'none'",
@@ -123,21 +123,35 @@ export class FeatureReferenceAuthProvider implements OAuthServerProvider {
     h1 { font-size: 22px; font-weight: 700; margin-bottom: 6px; }
     .sub { color: #888; font-size: 14px; margin-bottom: 28px; }
     .client-id { background: #0f0f0f; border: 1px solid #2a2a2a; border-radius: 6px; padding: 10px 14px; font-size: 13px; font-family: monospace; color: #aaa; word-break: break-all; margin-bottom: 28px; }
-    .pin-label { font-size: 13px; color: #888; margin-bottom: 8px; }
-    .pin-input {
-      width: 100%;
+    .pin-label { font-size: 13px; color: #888; margin-bottom: 12px; }
+    .pin-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 8px;
+    }
+    .pin-group {
+      display: flex;
+      gap: 6px;
+    }
+    .pin-cell {
+      width: 44px;
+      height: 52px;
       background: #0f0f0f;
       border: 1px solid #3a3a3a;
       border-radius: 6px;
-      padding: 12px 14px;
-      font-size: 18px;
+      font-size: 22px;
       font-family: monospace;
-      letter-spacing: 0.15em;
+      font-weight: 600;
       color: #f0f0f0;
-      margin-bottom: 8px;
+      text-align: center;
       outline: none;
+      caret-color: #16a34a;
+      transition: border-color 0.15s;
     }
-    .pin-input:focus { border-color: #16a34a; }
+    .pin-cell:focus { border-color: #16a34a; box-shadow: 0 0 0 2px rgba(22,163,74,0.2); }
+    .pin-cell.filled { border-color: #2a6a3a; }
+    .pin-sep { font-size: 22px; color: #555; font-weight: 300; user-select: none; }
     .pin-hint { font-size: 11px; color: #555; margin-bottom: 24px; }
     .error-msg { color: #ef4444; font-size: 13px; margin-bottom: 16px; display: none; }
     .actions { display: flex; gap: 12px; }
@@ -159,24 +173,93 @@ export class FeatureReferenceAuthProvider implements OAuthServerProvider {
     <p class="sub">A client is requesting access to this MCP server.</p>
     <div class="client-id">${client.client_id}</div>
 
-    <form method="POST" action="/authorize/confirm">
+    <form method="POST" action="/authorize/confirm" id="pinForm">
       <input type="hidden" name="code" value="${authorizationCode}" />
+      <input type="hidden" name="pin" id="pinHidden" />
       <p class="pin-label">Server PIN</p>
-      <input
-        class="pin-input"
-        type="password"
-        name="pin"
-        maxlength="8"
-        autocomplete="off"
-        autofocus
-        placeholder="••••••••"
-      />
-      <p class="pin-hint">Check the terminal where the MCP server is running.</p>
+      <div class="pin-row">
+        <div class="pin-group" id="group1">
+          <input class="pin-cell" type="text" inputmode="text" maxlength="1" autocomplete="off" spellcheck="false" data-idx="0">
+          <input class="pin-cell" type="text" inputmode="text" maxlength="1" autocomplete="off" spellcheck="false" data-idx="1">
+          <input class="pin-cell" type="text" inputmode="text" maxlength="1" autocomplete="off" spellcheck="false" data-idx="2">
+          <input class="pin-cell" type="text" inputmode="text" maxlength="1" autocomplete="off" spellcheck="false" data-idx="3">
+        </div>
+        <span class="pin-sep">&ndash;</span>
+        <div class="pin-group" id="group2">
+          <input class="pin-cell" type="text" inputmode="text" maxlength="1" autocomplete="off" spellcheck="false" data-idx="4">
+          <input class="pin-cell" type="text" inputmode="text" maxlength="1" autocomplete="off" spellcheck="false" data-idx="5">
+          <input class="pin-cell" type="text" inputmode="text" maxlength="1" autocomplete="off" spellcheck="false" data-idx="6">
+          <input class="pin-cell" type="text" inputmode="text" maxlength="1" autocomplete="off" spellcheck="false" data-idx="7">
+        </div>
+      </div>
+      <p class="pin-hint">
+        Run <code style="background:#1a1a1a;padding:1px 5px;border-radius:3px;font-size:11px">rcmcp auth</code> on the Mac to get the PIN.
+        &nbsp;<a href="https://github.com/Hexpy-Games/remote-control-mcp#authorization" target="_blank" style="color:#555;font-size:11px">Help &nearr;</a>
+      </p>
       <div class="actions">
-        <button type="submit" class="btn btn-approve">✓ Approve</button>
+        <button type="submit" class="btn btn-approve" id="approveBtn" disabled>✓ Approve</button>
         <a href="/" class="btn btn-deny">✗ Deny</a>
       </div>
     </form>
+    <script>
+      (function() {
+        var cells = Array.from(document.querySelectorAll('.pin-cell'));
+        var hidden = document.getElementById('pinHidden');
+        var btn = document.getElementById('approveBtn');
+
+        cells[0].focus();
+
+        function updateHidden() {
+          var val = cells.map(function(c){ return c.value; }).join('');
+          hidden.value = val;
+          btn.disabled = val.length < 8;
+        }
+
+        cells.forEach(function(cell, i) {
+          cell.addEventListener('input', function() {
+            // 붙여넣기 처리: 8자 혹은 9자(대시 포함) 한번에
+            var raw = cell.value.replace(/-/g,'');
+            if (raw.length > 1) {
+              var chars = raw.slice(0, 8).split('');
+              chars.forEach(function(ch, j) {
+                if (cells[j]) { cells[j].value = ch; cells[j].classList.toggle('filled', !!ch); }
+              });
+              var last = Math.min(chars.length, 7);
+              cells[last] && cells[last].focus();
+              updateHidden();
+              return;
+            }
+            cell.classList.toggle('filled', !!cell.value);
+            if (cell.value && i < 7) cells[i+1].focus();
+            updateHidden();
+          });
+
+          cell.addEventListener('keydown', function(e) {
+            if (e.key === 'Backspace' && !cell.value && i > 0) {
+              cells[i-1].value = '';
+              cells[i-1].classList.remove('filled');
+              cells[i-1].focus();
+              updateHidden();
+            }
+          });
+
+          cell.addEventListener('paste', function(e) {
+            e.preventDefault();
+            var text = (e.clipboardData || window.clipboardData).getData('text').replace(/-/g,'').slice(0,8);
+            text.split('').forEach(function(ch, j) {
+              if (cells[j]) { cells[j].value = ch; cells[j].classList.toggle('filled', true); }
+            });
+            var nextIdx = Math.min(text.length, 7);
+            cells[nextIdx].focus();
+            updateHidden();
+          });
+        });
+
+        document.getElementById('pinForm').addEventListener('submit', function() {
+          updateHidden();
+        });
+      })();
+    </script>
 
     <div class="footer">Remote Mac MCP Server</div>
   </div>
