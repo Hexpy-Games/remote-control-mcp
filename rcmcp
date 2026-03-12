@@ -322,6 +322,35 @@ cmd_restart() {
   echo ""
 }
 
+# ── auth ──────────────────────────────────────────────────────────────────────
+cmd_auth() {
+  local admin_url="http://127.0.0.1:3233/pin"
+  local response
+  response=$(curl -sf --max-time 3 "$admin_url" 2>/dev/null)
+  if [[ -z "$response" ]]; then
+    echo ""
+    err "Could not reach admin port (127.0.0.1:3233)"
+    info "Is the server running? Try: ${WHITE}rcmcp status${RESET}"
+    echo ""
+    return 1
+  fi
+  local pin
+  pin=$(echo "$response" | python3 -c "import sys,json; print(json.load(sys.stdin)['pin'])" 2>/dev/null)
+  if [[ -z "$pin" ]]; then
+    err "Unexpected response from admin port"
+    return 1
+  fi
+  echo ""
+  echo "  ${BOLD}Authorization PIN${RESET}"
+  divider
+  echo ""
+  echo "  ${BOLD}${CYAN}${pin}${RESET}"
+  echo ""
+  info "Enter this PIN on the ${WHITE}/authorize${RESET} approval page."
+  info "PIN resets on server restart."
+  echo ""
+}
+
 # ── logs ──────────────────────────────────────────────────────────────────────
 cmd_logs() {
   local follow=false target="server"
@@ -550,7 +579,8 @@ cmd_help() {
   echo "  ${WHITE}stop${RESET}    [target]    Stop service(s)"
   echo "  ${WHITE}restart${RESET} [target]    Restart service(s)"
   echo "  ${WHITE}logs${RESET}    [target]    Show logs  ${DIM}(add -f to follow)${RESET}"
-  echo "  ${WHITE}url${RESET}                 Show current MCP endpoint URL"
+  echo "  ${WHITE}auth${RESET}                Show current authorization PIN
+  ${WHITE}url${RESET}                 Show current MCP endpoint URL"
   echo "  ${WHITE}update${RESET}              Pull latest, rebuild, restart server"
   echo "  ${WHITE}uninstall${RESET}           Remove LaunchAgents, binaries, and PATH entry"
   echo "  ${WHITE}help${RESET}                Show this help"
@@ -584,6 +614,7 @@ case $cmd in
   stop)             cmd_stop "$@" ;;
   restart)          cmd_restart "$@" ;;
   logs|log)         cmd_logs "$@" ;;
+  auth)             cmd_auth ;;
   url)              cmd_url ;;
   update|upgrade)   cmd_update ;;
   uninstall|remove) cmd_uninstall ;;

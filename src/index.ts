@@ -18,6 +18,8 @@ import { redisClient } from './modules/shared/redis.js';
 import { logger } from './modules/shared/logger.js';
 import { getServerPin } from './modules/auth/auth/pin.js';
 
+const ADMIN_PORT = 3233;
+
 async function main() {
   console.log('');
   console.log('========================================');
@@ -25,19 +27,14 @@ async function main() {
   console.log('========================================');
 
   // ── Authorization PIN ──
-  // 환경변수 SERVER_PIN 설정 시 고정 PIN 사용, 미설정 시 랜덤 생성.
-  // 랜덤 생성 시 ~/.rcmcp/.pin 파일(chmod 600)에 저장 + macOS 알림 표시.
+  // 메모리에만 존재. 디스크에 저장하지 않음.
+  // 터미널 출력 외에 `rcmcp auth` 명령어로 언제든 확인 가능 (localhost 전용 admin 포트).
   const pin = getServerPin();
-  const isFixedPin = !!process.env.SERVER_PIN;
   console.log('');
   console.log('┌──────────────────────────────────────┐');
   console.log(`│  Authorization PIN: ${pin}        │`);
-  if (isFixedPin) {
-    console.log('│  Mode: fixed (SERVER_PIN in .env)    │');
-  } else {
-    console.log('│  Saved: ~/.rcmcp/.pin (chmod 600)    │');
-  }
   console.log('│  Required to approve MCP access      │');
+  console.log(`│  Run 'rcmcp auth' to view again       │`);
   console.log('└──────────────────────────────────────┘');
   console.log('');
 
@@ -200,11 +197,25 @@ async function main() {
 </html>`);
   });
 
+  // ── Public MCP server ──────────────────────────────────────────────────────
   app.listen(config.port, () => {
     console.log('');
     console.log('========================================');
     console.log(`Server running at: ${config.baseUri}`);
     console.log('========================================');
+    console.log('');
+  });
+
+  // ── Admin server (localhost only, NOT tunneled) ────────────────────────────
+  // 127.0.0.1에만 바인딩 → Cloudflare/ngrok 터널은 이 포트를 프록시하지 않음.
+  // `rcmcp auth` 명령어가 이 포트를 통해 PIN을 조회함.
+  // PIN은 이 응답 외에 디스크에 저장되지 않음.
+  const adminApp = express();
+  adminApp.get('/pin', (_req, res) => {
+    res.json({ pin: getServerPin() });
+  });
+  adminApp.listen(ADMIN_PORT, '127.0.0.1', () => {
+    console.log(`Admin (localhost only): http://127.0.0.1:${ADMIN_PORT}`);
     console.log('');
   });
 }
