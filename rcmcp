@@ -1,0 +1,592 @@
+#!/usr/bin/env zsh
+# rcmcp — remote-control-mcp management CLI
+# https://github.com/hexpy-games/remote-control-mcp
+
+setopt NO_UNSET 2>/dev/null || true
+
+# ── Labels & Paths ──────────────────────────────────────────────────────────
+SERVER_LABEL="com.hexpy.remote-control-mcp"
+TUNNEL_LABEL="com.hexpy.remote-control-mcp-tunnel"
+SERVER_PLIST="$HOME/Library/LaunchAgents/${SERVER_LABEL}.plist"
+TUNNEL_PLIST="$HOME/Library/LaunchAgents/${TUNNEL_LABEL}.plist"
+SERVER_LOG="$HOME/Library/Logs/remote-control-mcp.log"
+TUNNEL_LOG="$HOME/Library/Logs/remote-control-mcp-tunnel.log"
+FILESERVER_LABEL="com.hexpy.remote-control-mcp-fileserver"
+FILESERVER_PLIST="$HOME/Library/LaunchAgents/${FILESERVER_LABEL}.plist"
+FILESERVER_LOG="$HOME/Library/Logs/remote-control-mcp-fileserver.log"
+
+# Known install locations (checked in order during uninstall)
+RCMCP_INSTALL_PATHS=(
+  "/usr/local/bin/rcmcp"
+  "$HOME/.local/bin/rcmcp"
+)
+
+# ── Colors ──────────────────────────────────────────────────────────────────
+RESET=$'\033[0m'; BOLD=$'\033[1m'; DIM=$'\033[2m'
+RED=$'\033[31m'; GREEN=$'\033[32m'; YELLOW=$'\033[33m'
+CYAN=$'\033[36m'; WHITE=$'\033[97m'; BLUE=$'\033[34m'
+
+ok()   { echo "  ${GREEN}✓${RESET}  $*"; }
+err()  { echo "  ${RED}✗${RESET}  $*"; }
+warn() { echo "  ${YELLOW}⚠${RESET}  $*"; }
+info() { echo "  ${DIM}→${RESET}  $*"; }
+die()  { echo "\n  ${RED}Error:${RESET} $*\n" >&2; exit 1; }
+
+divider() { echo "  ${DIM}────────────────────────────────────────${RESET}"; }
+
+# ── Helpers ──────────────────────────────────────────────────────────────────
+_plist_value() {
+  local plist=$1 key=$2
+  /usr/libexec/PlistBuddy -c "Print :${key}" "$plist" 2>/dev/null || echo ""
+}
+
+_server_dir() {
+  [[ -f "$SERVER_PLIST" ]] && _plist_value "$SERVER_PLIST" "WorkingDirectory" || echo ""
+}
+
+_env_file() {
+  local dir; dir=$(_server_dir)
+  [[ -n "$dir" && -f "$dir/.env" ]] && echo "$dir/.env" || echo ""
+}
+
+_base_uri() {
+  local env; env=$(_env_file)
+  [[ -n "$env" ]] && grep "^BASE_URI=" "$env" | cut -d= -f2- || echo "(not set)"
+}
+
+_is_loaded() {
+  launchctl list 2>/dev/null | grep -q "$1"
+}
+
+_service_pid() {
+  launchctl list 2>/dev/null | awk -v lbl="$1" '$3==lbl {print $1}' | head -1
+}
+
+_port_listening() {
+  lsof -nP -iTCP:$1 -sTCP:LISTEN 2>/dev/null | grep -q .
+}
+
+_tunnel_type() {
+  [[ ! -f "$TUNNEL_PLIST" ]] && echo "" && return
+  local prog; prog=$(/usr/libexec/PlistBuddy -c "Print :ProgramArguments:0" "$TUNNEL_PLIST" 2>/dev/null || echo "")
+  case "$prog" in
+    *cloudflared*) echo "Cloudflare" ;;
+    *ngrok*)       echo "ngrok" ;;
+    *tailscale*)   echo "Tailscale" ;;
+    *)             echo "unknown" ;;
+  esac
+}
+
+# ── Live tunnel URL detection ───────────────────────────────────────────────
+_ngrok_live_url() {
+  # Query ngrok's local API (port 4040) for the active HTTPS tunnel
+  curl -sf --max-time 2 http://127.0.0.1:4040/api/tunnels 2>/dev/null | \
+    python3 -c "
+import sys, json
+try:
+  d = json.load(sys.stdin)
+  url = next((t['public_url'] for t in d.get('tunnels', []) if t.get('proto') == 'https'), '')
+  print(url)
+except:
+  print('')
+" 2>/dev/null || echo ""
+}
+
+_tailscale_live_url() {
+  tailscale funnel status 2>/dev/null | awk '/https:\/\// {print $1; exit}'
+}
+
+# Usage: _tunnel_live_url [ttype]
+#   ttype: Cloudflare | ngrok | Tailscale | (empty = auto-detect)
+_tunnel_live_url() {
+  local ttype=${1:-$(_tunnel_type)}
+  local live_url=""
+  case "$ttype" in
+    ngrok)
+      live_url=$(_ngrok_live_url)
+      ;;
+    Tailscale)
+      live_url=$(_tailscale_live_url)
+      [[ -z "$live_url" ]] && live_url=$(_base_uri)
+      ;;
+    Cloudflare|*)
+      live_url=$(_base_uri)
+      ;;
+  esac
+  echo "$live_url"
+}
+
+# Sync .env BASE_URI to current live URL — mainly for ngrok free tier (URL changes on restart)
+# Prints the new URL if it changed, empty string if unchanged
+_sync_base_uri() {
+  local new_url=$1
+  local env; env=$(_env_file)
+  [[ -z "$env" || -z "$new_url" ]] && return
+  local current; current=$(grep "^BASE_URI=" "$env" | cut -d= -f2-)
+  if [[ "$current" != "$new_url" ]]; then
+    sed -i '' "s|^BASE_URI=.*|BASE_URI=${new_url}|" "$env"
+    echo "$new_url"
+  fi
+}
+
+# ── status ────────────────────────────────────────────────────────────────────
+cmd_status() {
+  echo ""
+  echo "  ${BOLD}${WHITE}remote-control-mcp status${RESET}"
+  divider
+
+  # Server
+  local pid; pid=$(_service_pid "$SERVER_LABEL")
+  local loaded=false
+  _is_loaded "$SERVER_LABEL" && loaded=true
+
+  echo ""
+  echo "  ${BOLD}MCP Server${RESET}"
+
+  if $loaded && [[ "$pid" != "-" && -n "$pid" ]]; then
+    ok "${GREEN}${BOLD}running${RESET}  ${DIM}(PID $pid)${RESET}"
+  elif $loaded; then
+    warn "${YELLOW}loaded but not running${RESET}"
+  else
+    err "${RED}stopped${RESET}"
+  fi
+
+  if _port_listening 3232; then
+    info "port 3232 ${GREEN}●${RESET} listening"
+  else
+    info "port 3232 ${RED}●${RESET} not listening"
+  fi
+
+  local sdir; sdir=$(_server_dir)
+  [[ -n "$sdir" ]] && info "dir  ${DIM}${sdir}${RESET}"
+  info "log  ${DIM}${SERVER_LOG}${RESET}"
+
+  if [[ -f "$SERVER_PLIST" ]]; then
+    local runatload; runatload=$(_plist_value "$SERVER_PLIST" "RunAtLoad")
+    [[ "$runatload" == "true" ]] && info "auto-start ${GREEN}enabled${RESET}" || info "auto-start ${YELLOW}disabled${RESET}"
+  else
+    warn "no LaunchAgent registered"
+  fi
+
+  divider
+
+  # Tunnel
+  echo ""
+  echo "  ${BOLD}Tunnel${RESET}"
+  local ttype; ttype=$(_tunnel_type)
+
+  if [[ -z "$ttype" ]]; then
+    info "${DIM}no tunnel configured${RESET}"
+  else
+    local tpid; tpid=$(_service_pid "$TUNNEL_LABEL")
+    local tloaded=false
+    _is_loaded "$TUNNEL_LABEL" && tloaded=true
+
+    if $tloaded && [[ "$tpid" != "-" && -n "$tpid" ]]; then
+      ok "${GREEN}${BOLD}running${RESET}  ${DIM}(${ttype}, PID $tpid)${RESET}"
+    elif $tloaded; then
+      warn "${YELLOW}loaded but not running${RESET}  ${DIM}(${ttype})${RESET}"
+    else
+      err "${RED}stopped${RESET}  ${DIM}(${ttype})${RESET}"
+    fi
+    info "log  ${DIM}${TUNNEL_LOG}${RESET}"
+  fi
+
+  echo ""
+  divider
+  echo ""
+  echo "  ${BOLD}Endpoint${RESET}"
+
+  local live_url; live_url=$(_tunnel_live_url "$ttype")
+
+  if [[ -n "$live_url" && "$live_url" != "(not set)" ]]; then
+    echo "  ${CYAN}${live_url}/mcp${RESET}"
+    # ngrok free tier: URL changes on every restart — auto-sync .env
+    if [[ "$ttype" == "ngrok" ]]; then
+      local updated; updated=$(_sync_base_uri "$live_url")
+      if [[ -n "$updated" ]]; then
+        info "BASE_URI updated in .env ${DIM}(ngrok URL changed)${RESET}"
+      fi
+    fi
+  else
+    echo "  ${DIM}(tunnel not running or URL unavailable)${RESET}"
+    local stored; stored=$(_base_uri)
+    if [[ "$stored" != "(not set)" ]]; then
+      info "last known: ${CYAN}${stored}/mcp${RESET}"
+    fi
+  fi
+
+  # File Server
+  echo ""
+  divider
+  echo ""
+  echo "  ${BOLD}File Server${RESET}"
+  if [[ ! -f "$FILESERVER_PLIST" ]]; then
+    info "${DIM}not installed — run setup.sh to enable${RESET}"
+  else
+    local fspid; fspid=$(_service_pid "$FILESERVER_LABEL")
+    local fsloaded=false
+    _is_loaded "$FILESERVER_LABEL" && fsloaded=true
+    if $fsloaded && [[ "$fspid" != "-" && -n "$fspid" ]]; then
+      ok "${GREEN}${BOLD}running${RESET}  ${DIM}(PID $fspid, port 3835)${RESET}"
+    elif $fsloaded; then
+      warn "${YELLOW}loaded but not running${RESET}"
+    else
+      err "${RED}stopped${RESET}"
+    fi
+    info "log  ${DIM}${FILESERVER_LOG}${RESET}"
+  fi
+  echo ""
+}
+
+# ── start / stop / restart ────────────────────────────────────────────────────
+_target() {
+  local t=${1:-all}
+  case $t in
+    server|srv) echo "server" ;;
+    tunnel|tun) echo "tunnel" ;;
+    fileserver|fs) echo "fileserver" ;;
+    all|"")     echo "all" ;;
+    *) die "Unknown target '$t'. Use: server | tunnel | fileserver | all" ;;
+  esac
+}
+
+_start_server() {
+  [[ ! -f "$SERVER_PLIST" ]] && die "Server LaunchAgent not found. Run setup.sh first."
+  _is_loaded "$SERVER_LABEL" || launchctl load "$SERVER_PLIST" 2>/dev/null
+  launchctl start "$SERVER_LABEL" 2>/dev/null || true
+  sleep 1
+  _is_loaded "$SERVER_LABEL" && ok "Server started" || warn "Server may still be starting — check logs"
+}
+
+_stop_server() {
+  launchctl stop "$SERVER_LABEL" 2>/dev/null || true
+  ok "Server stopped"
+}
+
+_start_tunnel() {
+  [[ ! -f "$TUNNEL_PLIST" ]] && { warn "No tunnel LaunchAgent found — skipping."; return; }
+  _is_loaded "$TUNNEL_LABEL" || launchctl load "$TUNNEL_PLIST" 2>/dev/null
+  launchctl start "$TUNNEL_LABEL" 2>/dev/null || true
+  sleep 1
+  _is_loaded "$TUNNEL_LABEL" && ok "Tunnel started" || warn "Tunnel may still be starting — check logs"
+}
+
+_stop_tunnel() {
+  launchctl stop "$TUNNEL_LABEL" 2>/dev/null || true
+  ok "Tunnel stopped"
+}
+_start_fileserver() {
+  [[ ! -f "$FILESERVER_PLIST" ]] && { warn "No file server LaunchAgent found — run setup.sh to install."; return; }
+  _is_loaded "$FILESERVER_LABEL" || launchctl load "$FILESERVER_PLIST" 2>/dev/null
+  launchctl start "$FILESERVER_LABEL" 2>/dev/null || true
+  sleep 1
+  _is_loaded "$FILESERVER_LABEL" && ok "File server started (port 3835)" || warn "File server may still be starting — check logs"
+}
+
+_stop_fileserver() {
+  launchctl stop "$FILESERVER_LABEL" 2>/dev/null || true
+  ok "File server stopped"
+}
+
+cmd_start() {
+  local target; target=$(_target "${1:-}")
+  echo ""
+  [[ $target == "server" || $target == "all" ]] && _start_server
+  [[ $target == "tunnel" || $target == "all" ]] && _start_tunnel
+  [[ $target == "fileserver" ]] && _start_fileserver
+  echo ""
+}
+
+cmd_stop() {
+  local target; target=$(_target "${1:-}")
+  echo ""
+  [[ $target == "server" || $target == "all" ]] && _stop_server
+  [[ $target == "tunnel" || $target == "all" ]] && _stop_tunnel
+  [[ $target == "fileserver" ]] && _stop_fileserver
+  echo ""
+}
+
+cmd_restart() {
+  local target; target=$(_target "${1:-}")
+  echo ""
+  if [[ $target == "server" || $target == "all" ]]; then
+    _stop_server; sleep 1; _start_server
+  fi
+  if [[ $target == "tunnel" || $target == "all" ]]; then
+    _stop_tunnel; sleep 1; _start_tunnel
+  fi
+  if [[ $target == "fileserver" ]]; then
+    _stop_fileserver; sleep 1; _start_fileserver
+  fi
+  echo ""
+}
+
+# ── logs ──────────────────────────────────────────────────────────────────────
+cmd_logs() {
+  local follow=false target="server"
+  for arg in "$@"; do
+    case $arg in
+      -f|--follow) follow=true ;;
+      server|srv)      target="server" ;;
+      tunnel|tun)      target="tunnel" ;;
+      fileserver|fs)  target="fileserver" ;;
+      all)             target="all" ;;
+    esac
+  done
+
+  local logfile
+  case $target in
+    server)     logfile="$SERVER_LOG" ;;
+    tunnel)     logfile="$TUNNEL_LOG" ;;
+    fileserver) logfile="$FILESERVER_LOG" ;;
+    all)
+      echo "  ${DIM}# server log${RESET}"
+      [[ -f "$SERVER_LOG" ]] && tail -30 "$SERVER_LOG" || echo "  (no server log yet)"
+      echo ""
+      echo "  ${DIM}# tunnel log${RESET}"
+      [[ -f "$TUNNEL_LOG" ]] && tail -30 "$TUNNEL_LOG" || echo "  (no tunnel log yet)"
+      echo ""
+      echo "  ${DIM}# file server log${RESET}"
+      [[ -f "$FILESERVER_LOG" ]] && tail -30 "$FILESERVER_LOG" || echo "  (no file server log yet)"
+      return ;;
+  esac
+
+  if [[ ! -f "$logfile" ]]; then
+    warn "Log file not found: ${logfile}"
+    return
+  fi
+
+  if $follow; then
+    echo "  ${DIM}Following ${logfile} — Ctrl+C to stop${RESET}"
+    echo ""
+    tail -f "$logfile"
+  else
+    tail -50 "$logfile"
+  fi
+}
+
+# ── url ───────────────────────────────────────────────────────────────────────
+cmd_url() {
+  local ttype; ttype=$(_tunnel_type)
+  local live_url; live_url=$(_tunnel_live_url "$ttype")
+  echo ""
+  echo "  ${BOLD}MCP Endpoint${RESET}"
+
+  if [[ -n "$live_url" && "$live_url" != "(not set)" ]]; then
+    echo "  ${CYAN}${live_url}/mcp${RESET}"
+    if [[ "$ttype" == "ngrok" ]]; then
+      local updated; updated=$(_sync_base_uri "$live_url")
+      [[ -n "$updated" ]] && info "BASE_URI updated in .env ${DIM}(ngrok URL changed)${RESET}"
+    fi
+  else
+    local stored; stored=$(_base_uri)
+    echo "  ${CYAN}${stored}/mcp${RESET}"
+    [[ "$ttype" == "ngrok" ]] && warn "ngrok may not be running — URL could be stale"
+  fi
+
+  echo ""
+  local env; env=$(_env_file)
+  [[ -n "$env" ]] && info ".env → ${DIM}${env}${RESET}"
+  echo ""
+}
+
+# ── update ────────────────────────────────────────────────────────────────────
+cmd_update() {
+  local sdir; sdir=$(_server_dir)
+  [[ -z "$sdir" ]] && die "Server directory not found. Is the LaunchAgent installed?"
+  [[ ! -d "$sdir/.git" ]] && die "Not a git repository: ${sdir}"
+
+  echo ""
+  info "Stopping server..."
+  _stop_server
+
+  echo ""
+  info "Pulling latest changes..."
+  cd "$sdir" || die "Cannot cd to $sdir"
+  git pull 2>&1 | while IFS= read -r l; do info "$l"; done
+  echo ""
+
+  info "Rebuilding..."
+  npm run build 2>&1 | while IFS= read -r l; do info "$l"; done
+  echo ""
+
+  info "Starting server..."
+  _start_server
+  echo ""
+  ok "Update complete"
+  echo ""
+}
+
+# ── uninstall ─────────────────────────────────────────────────────────────────
+cmd_uninstall() {
+  echo ""
+  echo "  ${BOLD}${RED}Uninstall remote-control-mcp${RESET}"
+  divider
+  echo ""
+  echo "  This will remove:"
+  echo "  ${DIM}• LaunchAgents (server + tunnel + file server)${RESET}"
+  echo "  ${DIM}• Log files${RESET}"
+
+  # Show which bin paths exist
+  local found_bins=()
+  for p in "${RCMCP_INSTALL_PATHS[@]}"; do
+    [[ -f "$p" ]] && found_bins+=("$p")
+  done
+  for p in "${found_bins[@]}"; do
+    echo "  ${DIM}• rcmcp binary: ${p}${RESET}"
+  done
+
+  echo ""
+  printf "  ${YELLOW}Remove services and CLI?${RESET} [y/N] "
+  read -r confirm
+  if [[ "$confirm" != "y" && "$confirm" != "Y" ]]; then
+    echo ""
+    info "Cancelled."
+    echo ""
+    return
+  fi
+
+  echo ""
+
+  # ── Stop and remove LaunchAgents ──────────────────────────────────
+  # Server
+  if _is_loaded "$SERVER_LABEL"; then
+    launchctl stop "$SERVER_LABEL" 2>/dev/null || true
+    launchctl unload "$SERVER_PLIST" 2>/dev/null || true
+    _is_loaded "$SERVER_LABEL" \
+      && warn "Server process may still be running — check manually" \
+      || ok "Server stopped and unregistered"
+  else
+    info "Server was not running"
+  fi
+  if [[ -f "$SERVER_PLIST" ]]; then
+    rm "$SERVER_PLIST" && ok "Removed ${SERVER_PLIST}"
+  fi
+
+  # Tunnel
+  if _is_loaded "$TUNNEL_LABEL"; then
+    launchctl stop "$TUNNEL_LABEL" 2>/dev/null || true
+    launchctl unload "$TUNNEL_PLIST" 2>/dev/null || true
+    _is_loaded "$TUNNEL_LABEL" \
+      && warn "Tunnel process may still be running — check manually" \
+      || ok "Tunnel stopped and unregistered"
+  else
+    info "Tunnel was not running"
+  fi
+  if [[ -f "$TUNNEL_PLIST" ]]; then
+    rm "$TUNNEL_PLIST" && ok "Removed ${TUNNEL_PLIST}"
+  fi
+
+  # ── Remove log files ──────────────────────────────────────────────
+  rm -f "$SERVER_LOG" "$TUNNEL_LOG" && ok "Removed log files"
+
+  # ── Remove rcmcp binaries ─────────────────────────────────────────
+  echo ""
+  local removed_any=false
+  for p in "${RCMCP_INSTALL_PATHS[@]}"; do
+    if [[ -f "$p" ]]; then
+      rm -f "$p" && ok "Removed ${p}"
+      removed_any=true
+    fi
+  done
+  # Also remove the currently running script if not already caught above
+  local self; self=$(realpath "$0" 2>/dev/null || echo "$0")
+  local already=false
+  for p in "${RCMCP_INSTALL_PATHS[@]}"; do
+    [[ "$self" == "$p" ]] && already=true
+  done
+  if ! $already && [[ -f "$self" ]]; then
+    rm -f "$self" && ok "Removed ${self}"
+    removed_any=true
+  fi
+  $removed_any || info "No rcmcp binary found in known locations"
+
+  # ── Clean up PATH entry in shell rc ──────────────────────────────
+  echo ""
+  local cleaned_path=false
+  for rc in "$HOME/.zshrc" "$HOME/.zprofile" "$HOME/.bashrc" "$HOME/.bash_profile"; do
+    [[ ! -f "$rc" ]] && continue
+    if grep -q "remote-control-mcp CLI" "$rc" 2>/dev/null || \
+       grep -q "\.local/bin" "$rc" 2>/dev/null && grep -B1 "\.local/bin" "$rc" | grep -q "remote-control-mcp" 2>/dev/null; then
+      # Remove the comment + PATH line pair
+      sed -i '' '/# remote-control-mcp CLI/{N;d;}' "$rc" 2>/dev/null && \
+        ok "Removed PATH entry from ${rc}" && cleaned_path=true
+    fi
+  done
+  $cleaned_path || info "No PATH entry to clean up"
+
+  # ── Optionally delete source directory ───────────────────────────
+  echo ""
+  printf "  ${YELLOW}Also delete the server source directory?${RESET} [y/N] "
+  read -r del_src
+  if [[ "$del_src" == "y" || "$del_src" == "Y" ]]; then
+    local sdir; sdir=$(_server_dir)
+    if [[ -n "$sdir" && -d "$sdir" ]]; then
+      rm -rf "$sdir" && ok "Removed ${sdir}"
+    else
+      warn "Source directory not found — already deleted?"
+    fi
+  fi
+
+  echo ""
+  ok "${GREEN}${BOLD}Uninstall complete.${RESET}"
+  echo ""
+}
+
+# ── help ──────────────────────────────────────────────────────────────────────
+cmd_help() {
+  echo ""
+  echo "  ${BOLD}${CYAN}rcmcp${RESET} — remote-control-mcp CLI"
+  echo ""
+  divider
+  echo ""
+  echo "  ${BOLD}Usage:${RESET}  rcmcp <command> [target] [flags]"
+  echo ""
+  echo "  ${BOLD}Commands:${RESET}"
+  echo ""
+  echo "  ${WHITE}status${RESET}              Show server + tunnel status and endpoint URL"
+  echo "  ${WHITE}start${RESET}   [target]    Start service(s)"
+  echo "  ${WHITE}stop${RESET}    [target]    Stop service(s)"
+  echo "  ${WHITE}restart${RESET} [target]    Restart service(s)"
+  echo "  ${WHITE}logs${RESET}    [target]    Show logs  ${DIM}(add -f to follow)${RESET}"
+  echo "  ${WHITE}url${RESET}                 Show current MCP endpoint URL"
+  echo "  ${WHITE}update${RESET}              Pull latest, rebuild, restart server"
+  echo "  ${WHITE}uninstall${RESET}           Remove LaunchAgents, binaries, and PATH entry"
+  echo "  ${WHITE}help${RESET}                Show this help"
+  echo ""
+  echo "  ${BOLD}Targets:${RESET}"
+  echo ""
+  echo "  ${DIM}server${RESET}      (or srv)    MCP server only"
+  echo "  ${DIM}tunnel${RESET}      (or tun)    Tunnel only"
+  echo "  ${DIM}fileserver${RESET}  (or fs)     File server only"
+  echo "  ${DIM}all${RESET}                     server + tunnel (default)"
+  echo ""
+  echo "  ${BOLD}Examples:${RESET}"
+  echo ""
+  echo "  ${DIM}rcmcp status${RESET}"
+  echo "  ${DIM}rcmcp restart server${RESET}"
+  echo "  ${DIM}rcmcp logs tunnel -f${RESET}"
+  echo "  ${DIM}rcmcp logs all${RESET}"
+  echo "  ${DIM}rcmcp update${RESET}"
+  echo ""
+  divider
+  echo ""
+}
+
+# ── entrypoint ────────────────────────────────────────────────────────────────
+local cmd=${1:-status}
+shift 2>/dev/null || true
+
+case $cmd in
+  status)           cmd_status ;;
+  start)            cmd_start "$@" ;;
+  stop)             cmd_stop "$@" ;;
+  restart)          cmd_restart "$@" ;;
+  logs|log)         cmd_logs "$@" ;;
+  url)              cmd_url ;;
+  update|upgrade)   cmd_update ;;
+  uninstall|remove) cmd_uninstall ;;
+  help|-h|--help)   cmd_help ;;
+  *)                die "Unknown command '${cmd}'. Run 'rcmcp help' for usage." ;;
+esac

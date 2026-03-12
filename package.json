@@ -1,0 +1,48 @@
+{
+  "name": "remote-control-mcp",
+  "version": "1.0.0",
+  "description": "MCP server for remote Mac control — shell, files, AppleScript via OAuth 2.0",
+  "type": "module",
+  "main": "dist/index.js",
+  "scripts": {
+    "dev": "tsx watch --inspect src/index.ts",
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "lint": "eslint src/",
+    "typecheck": "tsc --noEmit",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.24.2",
+    "@redis/client": "^1.6.0",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "express-rate-limit": "^8.0.1",
+    "raw-body": "^3.0.0",
+    "zod": "^3.25.76"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.15.0",
+    "@types/content-type": "^1.1.8",
+    "@types/cors": "^2.8.17",
+    "@types/express": "^5.0.0",
+    "@types/node": "^22.10.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "typescript-eslint": "^8.18.0"
+  },
+  "overrides": {
+    "@types/express": "^5.0.0",
+    "@types/express-serve-static-core": "5.1.0"
+  },
+  "engines": {
+    "node": ">=20.16.0 || >=22.3.0"
+  },
+  "author": "remote-control-mcp contributors",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/hexpy-games/remote-control-mcp"
+  },
+  "license": "MIT"
+}
