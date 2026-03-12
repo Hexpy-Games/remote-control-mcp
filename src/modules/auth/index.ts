@@ -16,6 +16,8 @@ import { fileURLToPath } from 'url';
 import rateLimit from 'express-rate-limit';
 import { mcpAuthRouter } from '@modelcontextprotocol/sdk/server/auth/router.js';
 import { FeatureReferenceAuthProvider } from './auth/provider.js';
+import { verifyPin } from './auth/pin.js';
+import { readPendingAuthorization } from './services/auth.js';
 import { TokenIntrospectionResponse } from '../../interfaces/auth-validator.js';
 import { logger } from '../shared/logger.js';
 
@@ -73,13 +75,23 @@ export class AuthModule {
   private setupRouter(): Router {
     const router = Router();
 
-    // Rate limiters for different route types
+    // Rate limiters
     const staticAssetLimiter = rateLimit({
-      windowMs: 60 * 1000, // 1 minute
-      max: 100, // 100 requests per minute for static assets
+      windowMs: 60 * 1000,
+      max: 100,
       message: 'Too many requests for static assets',
       standardHeaders: true,
       legacyHeaders: false,
+    });
+
+    // PIN confirm: 5 attempts per 10 minutes per IP (brute force 방지)
+    const pinConfirmLimiter = rateLimit({
+      windowMs: 10 * 60 * 1000,
+      max: 5,
+      message: 'Too many PIN attempts. Try again later.',
+      standardHeaders: true,
+      legacyHeaders: false,
+      skipSuccessfulRequests: true, // 성공한 요청은 카운트 제외
     });
 
     // OAuth endpoints via SDK's mcpAuthRouter
@@ -94,8 +106,52 @@ export class AuthModule {
       }
     }));
 
+    /**
+     * POST /authorize/confirm
+     * PIN 검증 후 client의 redirectUri로 auth code를 전달.
+     * PIN이 틀리면 403 반환 (rate limiter가 5회 실패 시 잠금).
+     */
+    router.post('/authorize/confirm',
+      pinConfirmLimiter,
+      express.urlencoded({ extended: false }),
+      async (req, res) => {
+        const { code, pin } = req.body as { code?: string; pin?: string };
+
+        // 입력값 기본 검증
+        if (!code || !pin) {
+          res.status(400).send('Bad request: missing code or pin');
+          return;
+        }
+
+        // PIN 검증 (timing-safe)
+        if (!verifyPin(pin)) {
+          logger.warning('PIN verification failed', { ip: req.ip });
+          res.status(403).send('Invalid PIN.');
+          return;
+        }
+
+        // pending auth 조회
+        const pending = await readPendingAuthorization(code);
+        if (!pending) {
+          res.status(400).send('Authorization code expired or not found.');
+          return;
+        }
+
+        // 검증 통과 → client redirectUri로 code + state 전달
+        const redirectUrl = new URL(pending.redirectUri);
+        redirectUrl.searchParams.set('code', code);
+        if (pending.state) redirectUrl.searchParams.set('state', pending.state);
+
+        logger.debug('PIN verified, redirecting to client', {
+          code: code.substring(0, 8) + '...',
+          clientId: pending.clientId,
+        });
+
+        res.redirect(302, redirectUrl.toString());
+      }
+    );
+
     // Token introspection endpoint (RFC 7662)
-    // This endpoint exists for external mode compatibility
     router.post('/introspect', express.urlencoded({ extended: false }), async (req, res) => {
       try {
         const { token } = req.body;
@@ -115,7 +171,6 @@ export class AuthModule {
         res.json({ active: false });
       }
     });
-
 
     // Static assets for auth pages
     router.get('/mcp-logo.png', staticAssetLimiter, (_req, res) => {

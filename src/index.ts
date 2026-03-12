@@ -16,12 +16,24 @@ import { MCPModule } from './modules/mcp/index.js';
 import { InternalTokenValidator } from './interfaces/auth-validator.js';
 import { redisClient } from './modules/shared/redis.js';
 import { logger } from './modules/shared/logger.js';
+import { getServerPin } from './modules/auth/auth/pin.js';
 
 async function main() {
   console.log('');
   console.log('========================================');
   console.log('Remote Mac MCP Server');
   console.log('========================================');
+
+  // ── Authorization PIN ──
+  // PIN은 서버 시작 시 메모리에서 1회 생성되며, 재시작 전까지 고정.
+  // /authorize 승인 페이지 접근에 필요 — 터널 URL을 알더라도 PIN 없이는 접근 불가.
+  const pin = getServerPin();
+  console.log('');
+  console.log('┌─────────────────────────────────┐');
+  console.log(`│  Authorization PIN: ${pin}   │`);
+  console.log('│  Required to approve MCP access │');
+  console.log('└─────────────────────────────────┘');
+  console.log('');
 
   const app = express();
   app.set('trust proxy', 'loopback');

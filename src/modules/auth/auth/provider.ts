@@ -44,12 +44,13 @@ export class FeatureReferenceAuthProvider implements OAuthServerProvider {
   }
 
   /**
-   * Shows an approve/deny page. On approval, redirects directly to the client's
-   * redirect_uri with the authorization code — no upstream IdP hop.
+   * Renders a PIN-gated authorization page.
+   * The server prints a one-time PIN (a-z A-Z 0-9, 8 chars) to its terminal on startup.
+   * Without the PIN the Approve button is unreachable, even if the tunnel URL is known.
    *
-   * SECURITY NOTE: This server has no user credential layer. Anyone who can
-   * reach the /authorize endpoint can approve access. Security is enforced at
-   * the network tunnel (Cloudflare / ngrok) layer.
+   * Flow:
+   *   GET /authorize  →  render PIN form  (this method)
+   *   POST /authorize/confirm  →  verify PIN, redirect to client redirectUri with code
    */
   async authorize(
     client: OAuthClientInformationFull,
@@ -70,12 +71,6 @@ export class FeatureReferenceAuthProvider implements OAuthServerProvider {
       code: authorizationCode.substring(0, 8) + '...',
       clientId: client.client_id,
     });
-
-    // Build the approval redirect URL
-    const approveUrl = new URL(params.redirectUri);
-    approveUrl.searchParams.set('code', authorizationCode);
-    if (params.state) approveUrl.searchParams.set('state', params.state);
-    const approveHref = approveUrl.toString();
 
     res.setHeader('Content-Security-Policy', [
       "default-src 'self'",
@@ -126,12 +121,29 @@ export class FeatureReferenceAuthProvider implements OAuthServerProvider {
     }
     h1 { font-size: 22px; font-weight: 700; margin-bottom: 6px; }
     .sub { color: #888; font-size: 14px; margin-bottom: 28px; }
-    .field { background: #0f0f0f; border: 1px solid #2a2a2a; border-radius: 6px; padding: 10px 14px; font-size: 13px; font-family: monospace; color: #aaa; word-break: break-all; margin-bottom: 28px; }
+    .client-id { background: #0f0f0f; border: 1px solid #2a2a2a; border-radius: 6px; padding: 10px 14px; font-size: 13px; font-family: monospace; color: #aaa; word-break: break-all; margin-bottom: 28px; }
+    .pin-label { font-size: 13px; color: #888; margin-bottom: 8px; }
+    .pin-input {
+      width: 100%;
+      background: #0f0f0f;
+      border: 1px solid #3a3a3a;
+      border-radius: 6px;
+      padding: 12px 14px;
+      font-size: 18px;
+      font-family: monospace;
+      letter-spacing: 0.15em;
+      color: #f0f0f0;
+      margin-bottom: 8px;
+      outline: none;
+    }
+    .pin-input:focus { border-color: #16a34a; }
+    .pin-hint { font-size: 11px; color: #555; margin-bottom: 24px; }
+    .error-msg { color: #ef4444; font-size: 13px; margin-bottom: 16px; display: none; }
     .actions { display: flex; gap: 12px; }
-    .btn { flex: 1; padding: 12px; border-radius: 8px; font-size: 15px; font-weight: 600; cursor: pointer; text-decoration: none; text-align: center; display: inline-block; border: none; }
+    .btn { flex: 1; padding: 12px; border-radius: 8px; font-size: 15px; font-weight: 600; cursor: pointer; text-align: center; border: none; }
     .btn-approve { background: #16a34a; color: #fff; }
     .btn-approve:hover { background: #15803d; }
-    .btn-deny { background: #1e1e1e; color: #888; border: 1px solid #333; }
+    .btn-deny { background: #1e1e1e; color: #888; border: 1px solid #333; text-decoration: none; display: inline-block; }
     .btn-deny:hover { background: #2a2a2a; }
     .footer { margin-top: 24px; color: #555; font-size: 11px; text-align: center; }
   </style>
@@ -144,11 +156,27 @@ export class FeatureReferenceAuthProvider implements OAuthServerProvider {
     </div>
     <h1>Authorization Request</h1>
     <p class="sub">A client is requesting access to this MCP server.</p>
-    <div class="field">${client.client_id}</div>
-    <div class="actions">
-      <a href="${approveHref}" class="btn btn-approve">✓ Approve</a>
-      <a href="/" class="btn btn-deny">✗ Deny</a>
-    </div>
+    <div class="client-id">${client.client_id}</div>
+
+    <form method="POST" action="/authorize/confirm">
+      <input type="hidden" name="code" value="${authorizationCode}" />
+      <p class="pin-label">Server PIN</p>
+      <input
+        class="pin-input"
+        type="password"
+        name="pin"
+        maxlength="8"
+        autocomplete="off"
+        autofocus
+        placeholder="••••••••"
+      />
+      <p class="pin-hint">Check the terminal where the MCP server is running.</p>
+      <div class="actions">
+        <button type="submit" class="btn btn-approve">✓ Approve</button>
+        <a href="/" class="btn btn-deny">✗ Deny</a>
+      </div>
+    </form>
+
     <div class="footer">Remote Mac MCP Server</div>
   </div>
 </body>
@@ -170,9 +198,6 @@ export class FeatureReferenceAuthProvider implements OAuthServerProvider {
     client: OAuthClientInformationFull,
     authorizationCode: string
   ): Promise<OAuthTokens> {
-    // Read the pending authorization saved at /authorize time.
-    // (v2 generated tokens in the upstream IDP callback; we do it here
-    //  since there is no upstream IDP hop — approve goes directly to claude.ai)
     const pendingAuth = await readPendingAuthorization(authorizationCode);
     if (!pendingAuth) throw new Error('Invalid authorization code');
     if (pendingAuth.clientId !== client.client_id)
@@ -220,10 +245,8 @@ export class FeatureReferenceAuthProvider implements OAuthServerProvider {
 
     const newTokens = generateMcpTokens();
 
-    // Revoke old tokens BEFORE saving new ones (fix: was missing before)
     await revokeMcpInstallation(oldAccessToken);
 
-    // Save new tokens
     if (newTokens.refresh_token) {
       await saveRefreshToken(newTokens.refresh_token, newTokens.access_token);
     }
