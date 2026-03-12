@@ -139,6 +139,9 @@ export async function readPendingAuthorization(
   return readEncrypted<PendingAuthorization>(redisClient, {
     prefix: REDIS_KEY_PREFIXES.PENDING_AUTHORIZATION,
     key: authorizationCode,
+    // del: false (default) — pending auth must be readable by both /authorize/confirm
+    // AND the SDK's challengeForAuthorizationCode(). Replay is prevented by
+    // saveTokenExchange's alreadyUsed flag instead.
   });
 }
 
