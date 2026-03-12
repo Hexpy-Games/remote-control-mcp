@@ -322,6 +322,81 @@ cmd_restart() {
   echo ""
 }
 
+# ── auth ──────────────────────────────────────────────────────────────────────
+cmd_auth() {
+  local admin_base="http://127.0.0.1:3233"
+
+  # 새 PIN 발급 (POST /pin/rotate) — 실행마다 새 PIN + 이전 인증 기록 초기화
+  local pin_response
+  pin_response=$(curl -sf --max-time 3 -X POST "${admin_base}/pin/rotate" 2>/dev/null)
+  if [[ -z "$pin_response" ]]; then
+    echo ""
+    err "Could not reach admin port (127.0.0.1:3233)"
+    info "Is the server running? Try: ${WHITE}rcmcp status${RESET}"
+    echo ""
+    return 1
+  fi
+
+  local pin
+  pin=$(echo "$pin_response" | python3 -c "import sys,json; print(json.load(sys.stdin)['pin'])" 2>/dev/null)
+  if [[ -z "$pin" ]]; then
+    err "Unexpected response from admin port"
+    return 1
+  fi
+
+  # 클립보드 복사
+  echo -n "$pin" | pbcopy
+
+  # PIN을 XXXX-XXXX 형식으로 표시
+  local pin_display="${pin:0:4}-${pin:4:4}"
+
+  # PIN 표시
+  echo ""
+  echo "  ${BOLD}Authorization PIN${RESET}"
+  divider
+  echo ""
+  echo "  ${BOLD}${CYAN}  ${pin_display}  ${RESET}   ${DIM}(copied to clipboard)${RESET}"
+  echo ""
+  info "Enter this PIN on the ${WHITE}/authorize${RESET} approval page."
+  echo ""
+  divider
+  echo ""
+
+  # 폴링 시작 — auth-status?since=<now> 로 "지금 이후" 인증만 감지
+  local since
+  since=$(date +%s%3N)  # epoch milliseconds
+
+  # 바람개비 스피너 — local을 루프 밖에서 선언 (zsh: 루프 안 재선언 시 stdout 오염 방지)
+  local spinner_str='⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏'
+  local spinner_len=10
+  local spinner_idx=0
+  local auth_resp authorized client_id frame
+
+  while true; do
+    # \r\033[K : 커서 줄 처음으로 + 줄 끝까지 지우기
+    frame="${spinner_str:$spinner_idx:1}"
+    printf "\r\033[K  ${DIM}%s  Waiting for authorization...${RESET}" "$frame"
+    spinner_idx=$(( (spinner_idx + 1) % spinner_len ))
+
+    sleep 0.1
+
+    # 2초마다 (20프레임) 폴링
+    if (( spinner_idx % 20 == 0 )); then
+      auth_resp=$(curl -sf --max-time 3 "${admin_base}/auth-status?since=${since}" 2>/dev/null)
+      authorized=$(echo "$auth_resp" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('authorized','false'))" 2>/dev/null)
+
+      if [[ "$authorized" == "True" || "$authorized" == "true" ]]; then
+        client_id=$(echo "$auth_resp" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('clientId','unknown'))" 2>/dev/null)
+        printf "\r\033[K  ${GREEN}${BOLD}✓ Authorization complete${RESET}\n"
+        echo ""
+        info "Client: ${DIM}${client_id}${RESET}"
+        echo ""
+        return 0
+      fi
+    fi
+  done
+}
+
 # ── logs ──────────────────────────────────────────────────────────────────────
 cmd_logs() {
   local follow=false target="server"
@@ -550,7 +625,8 @@ cmd_help() {
   echo "  ${WHITE}stop${RESET}    [target]    Stop service(s)"
   echo "  ${WHITE}restart${RESET} [target]    Restart service(s)"
   echo "  ${WHITE}logs${RESET}    [target]    Show logs  ${DIM}(add -f to follow)${RESET}"
-  echo "  ${WHITE}url${RESET}                 Show current MCP endpoint URL"
+  echo "  ${WHITE}auth${RESET}                Show current authorization PIN
+  ${WHITE}url${RESET}                 Show current MCP endpoint URL"
   echo "  ${WHITE}update${RESET}              Pull latest, rebuild, restart server"
   echo "  ${WHITE}uninstall${RESET}           Remove LaunchAgents, binaries, and PATH entry"
   echo "  ${WHITE}help${RESET}                Show this help"
@@ -584,6 +660,7 @@ case $cmd in
   stop)             cmd_stop "$@" ;;
   restart)          cmd_restart "$@" ;;
   logs|log)         cmd_logs "$@" ;;
+  auth)             cmd_auth ;;
   url)              cmd_url ;;
   update|upgrade)   cmd_update ;;
   uninstall|remove) cmd_uninstall ;;

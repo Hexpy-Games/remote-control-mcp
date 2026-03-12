@@ -16,12 +16,27 @@ import { MCPModule } from './modules/mcp/index.js';
 import { InternalTokenValidator } from './interfaces/auth-validator.js';
 import { redisClient } from './modules/shared/redis.js';
 import { logger } from './modules/shared/logger.js';
+import { getServerPin, getLastAuth, rotatePin } from './modules/auth/auth/pin.js';
+
+const ADMIN_PORT = 3233;
 
 async function main() {
   console.log('');
   console.log('========================================');
   console.log('Remote Mac MCP Server');
   console.log('========================================');
+
+  // ── Authorization PIN ──
+  // 메모리에만 존재. 디스크에 저장하지 않음.
+  // 터미널 출력 외에 `rcmcp auth` 명령어로 언제든 확인 가능 (localhost 전용 admin 포트).
+  const pin = getServerPin();
+  console.log('');
+  console.log('┌──────────────────────────────────────┐');
+  console.log(`│  Authorization PIN: ${pin}        │`);
+  console.log('│  Required to approve MCP access      │');
+  console.log(`│  Run 'rcmcp auth' to view again       │`);
+  console.log('└──────────────────────────────────────┘');
+  console.log('');
 
   const app = express();
   app.set('trust proxy', 'loopback');
@@ -182,11 +197,40 @@ async function main() {
 </html>`);
   });
 
+  // ── Public MCP server ──────────────────────────────────────────────────────
   app.listen(config.port, () => {
     console.log('');
     console.log('========================================');
     console.log(`Server running at: ${config.baseUri}`);
     console.log('========================================');
+    console.log('');
+  });
+
+  // ── Admin server (localhost only, NOT tunneled) ────────────────────────────
+  // 127.0.0.1에만 바인딩 → Cloudflare/ngrok 터널은 이 포트를 프록시하지 않음.
+  // PIN은 이 응답 외에 디스크에 저장되지 않음.
+  const adminApp = express();
+
+  // PIN rotate — rcmcp auth 실행마다 호출. 새 PIN 생성 + lastAuth 초기화.
+  adminApp.post('/pin/rotate', (_req, res) => {
+    const pin = rotatePin();
+    res.json({ pin });
+  });
+
+  // 최근 인증 완료 여부 — rcmcp auth 폴링용
+  // since: 이 epoch ms 이후에 발급된 토큰만 "새 인증"으로 간주
+  adminApp.get('/auth-status', (req, res) => {
+    const since = Number(req.query.since) || 0;
+    const last = getLastAuth();
+    if (last && last.issuedAt > since) {
+      res.json({ authorized: true, clientId: last.clientId, issuedAt: last.issuedAt });
+    } else {
+      res.json({ authorized: false });
+    }
+  });
+
+  adminApp.listen(ADMIN_PORT, '127.0.0.1', () => {
+    console.log(`Admin (localhost only): http://127.0.0.1:${ADMIN_PORT}`);
     console.log('');
   });
 }

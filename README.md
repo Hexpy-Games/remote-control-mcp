@@ -134,17 +134,65 @@ caddy run
 
 ---
 
-## Connect to an AI client
+## Connect to Claude
 
-After the server is running and a tunnel is up, add the MCP server in your AI client's settings:
+After the server is running and a tunnel is up:
+
+### 1. Add the MCP server in Claude
+
+In **Claude.ai** (desktop or web): go to **Settings → Integrations → Add Integration** and paste your server URL:
 
 ```
 https://your-tunnel-url/mcp
 ```
 
-The client will trigger an OAuth authorization flow on first connect.
+Claude will immediately start an OAuth authorization flow.
 
-**Claude (claude.ai):** Settings → Connectors → Add MCP Server
+### 2. Authorization
+
+A browser window will open asking you to approve the connection. This is where you enter the **Server PIN**.
+
+**Get your PIN:**
+```bash
+rcmcp auth
+```
+
+This generates a fresh one-time PIN, copies it to your clipboard, and waits for you to complete the authorization:
+
+```
+  Authorization PIN
+  ────────────────────────────────────────
+
+    9aRs-VhzM   (copied to clipboard)
+
+  → Enter this PIN on the /authorize approval page.
+
+  ⠙  Waiting for authorization...
+```
+
+Paste the PIN into the browser form and click **Approve**. The terminal will confirm automatically:
+
+```
+  ✓ Authorization complete
+```
+
+### 3. Start using remote tools
+
+Once authorized, Claude has access to four tools on your Mac:
+
+| Tool | What it does |
+|---|---|
+| `shell_exec` | Run any zsh command |
+| `osascript` | Run AppleScript (UI automation, app control) |
+| `file_read` | Read files or list directories |
+| `file_write` | Write files (creates directories as needed) |
+
+**Example prompts to try:**
+- *"Take a screenshot and describe what's on my screen"*
+- *"What files are in my Downloads folder?"*
+- *"Search for coffee shops near me on Maps and send me the directions"*
+
+> **Other clients:** Any MCP-compatible client (Cursor, Windsurf, etc.) can connect using the same server URL. The OAuth flow is standard.
 
 ---
 
