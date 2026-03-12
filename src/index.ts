@@ -25,14 +25,20 @@ async function main() {
   console.log('========================================');
 
   // ── Authorization PIN ──
-  // PIN은 서버 시작 시 메모리에서 1회 생성되며, 재시작 전까지 고정.
-  // /authorize 승인 페이지 접근에 필요 — 터널 URL을 알더라도 PIN 없이는 접근 불가.
+  // 환경변수 SERVER_PIN 설정 시 고정 PIN 사용, 미설정 시 랜덤 생성.
+  // 랜덤 생성 시 ~/.rcmcp/.pin 파일(chmod 600)에 저장 + macOS 알림 표시.
   const pin = getServerPin();
+  const isFixedPin = !!process.env.SERVER_PIN;
   console.log('');
-  console.log('┌─────────────────────────────────┐');
-  console.log(`│  Authorization PIN: ${pin}   │`);
-  console.log('│  Required to approve MCP access │');
-  console.log('└─────────────────────────────────┘');
+  console.log('┌──────────────────────────────────────┐');
+  console.log(`│  Authorization PIN: ${pin}        │`);
+  if (isFixedPin) {
+    console.log('│  Mode: fixed (SERVER_PIN in .env)    │');
+  } else {
+    console.log('│  Saved: ~/.rcmcp/.pin (chmod 600)    │');
+  }
+  console.log('│  Required to approve MCP access      │');
+  console.log('└──────────────────────────────────────┘');
   console.log('');
 
   const app = express();
