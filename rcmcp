@@ -326,9 +326,9 @@ cmd_restart() {
 cmd_auth() {
   local admin_base="http://127.0.0.1:3233"
 
-  # 서버 생존 확인 + PIN 조회
+  # 새 PIN 발급 (POST /pin/rotate) — 실행마다 새 PIN + 이전 인증 기록 초기화
   local pin_response
-  pin_response=$(curl -sf --max-time 3 "${admin_base}/pin" 2>/dev/null)
+  pin_response=$(curl -sf --max-time 3 -X POST "${admin_base}/pin/rotate" 2>/dev/null)
   if [[ -z "$pin_response" ]]; then
     echo ""
     err "Could not reach admin port (127.0.0.1:3233)"
@@ -388,7 +388,8 @@ cmd_auth() {
     dots=$(( (dots % 3) + 1 ))
     local dot_str=""
     for ((i=0; i<dots; i++)); do dot_str+="·"; done
-    printf "  ${DIM}Waiting%-4s${RESET}" "$dot_str"
+    printf "
+  ${DIM}Waiting%-4s${RESET}" "$dot_str"
   done
 }
 

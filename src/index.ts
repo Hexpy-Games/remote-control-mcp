@@ -16,7 +16,7 @@ import { MCPModule } from './modules/mcp/index.js';
 import { InternalTokenValidator } from './interfaces/auth-validator.js';
 import { redisClient } from './modules/shared/redis.js';
 import { logger } from './modules/shared/logger.js';
-import { getServerPin, getLastAuth } from './modules/auth/auth/pin.js';
+import { getServerPin, getLastAuth, rotatePin } from './modules/auth/auth/pin.js';
 
 const ADMIN_PORT = 3233;
 
@@ -208,11 +208,13 @@ async function main() {
 
   // ── Admin server (localhost only, NOT tunneled) ────────────────────────────
   // 127.0.0.1에만 바인딩 → Cloudflare/ngrok 터널은 이 포트를 프록시하지 않음.
-  // `rcmcp auth` 명령어가 이 포트를 통해 PIN을 조회함.
   // PIN은 이 응답 외에 디스크에 저장되지 않음.
   const adminApp = express();
-  adminApp.get('/pin', (_req, res) => {
-    res.json({ pin: getServerPin() });
+
+  // PIN rotate — rcmcp auth 실행마다 호출. 새 PIN 생성 + lastAuth 초기화.
+  adminApp.post('/pin/rotate', (_req, res) => {
+    const pin = rotatePin();
+    res.json({ pin });
   });
 
   // 최근 인증 완료 여부 — rcmcp auth 폴링용
@@ -226,6 +228,7 @@ async function main() {
       res.json({ authorized: false });
     }
   });
+
   adminApp.listen(ADMIN_PORT, '127.0.0.1', () => {
     console.log(`Admin (localhost only): http://127.0.0.1:${ADMIN_PORT}`);
     console.log('');

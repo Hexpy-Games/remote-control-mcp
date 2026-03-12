@@ -12,8 +12,8 @@ function generatePin(): string {
   return pin;
 }
 
-// 서버 시작 시 1회 생성, 메모리에만 존재. 디스크에 저장하지 않음.
-const SERVER_PIN = generatePin();
+// 현재 활성 PIN — rotatePin() 호출 시 교체
+let _currentPin: string = generatePin();
 
 // 최근 인증 완료 정보 — provider가 토큰 발급 시 기록
 interface AuthRecord {
@@ -22,8 +22,21 @@ interface AuthRecord {
 }
 let _lastAuth: AuthRecord | null = null;
 
+/**
+ * 서버 시작 시 터미널 배너용 PIN 반환.
+ */
 export function getServerPin(): string {
-  return SERVER_PIN;
+  return _currentPin;
+}
+
+/**
+ * 새 PIN 생성 + lastAuth 초기화.
+ * rcmcp auth 실행마다 호출 → 매번 새 PIN, 이전 인증 기록 클리어.
+ */
+export function rotatePin(): string {
+  _currentPin = generatePin();
+  _lastAuth = null;
+  return _currentPin;
 }
 
 export function markAuthorized(clientId: string): void {
@@ -38,8 +51,8 @@ export function getLastAuth(): AuthRecord | null {
  * timing-safe 비교로 timing attack 방지.
  */
 export function verifyPin(input: string): boolean {
-  if (input.length !== SERVER_PIN.length) return false;
+  if (input.length !== _currentPin.length) return false;
   const a = Buffer.from(input);
-  const b = Buffer.from(SERVER_PIN);
+  const b = Buffer.from(_currentPin);
   return crypto.timingSafeEqual(a, b);
 }
