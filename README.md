@@ -112,7 +112,7 @@ ngrok http 3232
 
 ### Option 3: Self-hosted (advanced)
 
-Only use this if you have proper TLS termination in place. Using a domain name or a raw IP makes no meaningful security difference — the requirement is HTTPS, not a domain:
+Only use this if you have proper TLS termination in place:
 
 1. Forward port 3232 on your router to your Mac
 2. Set `BASE_URI` to your domain or public IP in `.env`
